@@ -1,126 +1,104 @@
 import bpy
 
-obj = bpy.context.object
 
-if not obj:
-    raise Exception("Нет активного объекта")
+def create_bonebridge_for_bone(obj, bone):
+    target_name = f"{obj.name}_{bone.name}_BoneBridge"
 
-# Проверяем, находимся ли мы в Pose Mode и выбрана ли кость
-is_pose_mode_with_bone = (bpy.context.mode == 'POSE' and 
-                          bpy.context.active_pose_bone is not None)
+    empty = bpy.data.objects.new(target_name, None)
+    bpy.context.collection.objects.link(empty)
 
-if is_pose_mode_with_bone:
-    # Работаем с костью
-    bone = bpy.context.active_pose_bone
-    target_name = f"{obj.name}_{bone.name}_reParent"
-    target_obj = obj
-    target_bone = bone
-else:
-    # Работаем с обычным объектом
-    if bpy.context.mode != 'OBJECT':
-        raise Exception("Для работы с объектом нужно быть в Object Mode")
-    
-    target_obj = obj
-    target_bone = None
-    target_name = f"{obj.name}_reParent"
+    empty.location = (0, 0, 0)
+    empty.rotation_euler = (0, 0, 0)
+    empty.rotation_mode = bone.rotation_mode
 
-scene = bpy.context.scene
-start = scene.frame_start
-end = scene.frame_end
+    empty["bonebridge_rig"] = obj.name
+    empty["bonebridge_bone"] = bone.name
 
-# --- создаём Empty
-empty = bpy.data.objects.new(target_name, None)
-bpy.context.collection.objects.link(empty)
+    childof = empty.constraints.new(type='CHILD_OF')
+    childof.name = "BoneBridge_CHILD_OF"
+    childof.target = obj
+    childof.subtarget = bone.name
 
-empty.location = (0, 0, 0)
-empty.rotation_euler = (0, 0, 0)
-empty.rotation_mode = target_obj.rotation_mode if target_obj.rotation_mode != 'QUATERNION' else 'XYZ'
+    bpy.context.view_layer.update()
+    childof.inverse_matrix.identity()
 
-# --- Child Of к целевому объекту/кости
-childof = empty.constraints.new(type='CHILD_OF')
-childof.name = "reParent_CHILD_OF"  # Добавляем имя констрейнту
+    return empty
 
-if target_bone:
-    # Если есть кость - привязываем к кости
-    childof.target = target_obj
-    childof.subtarget = target_bone.name
-else:
-    # Если обычный объект - привязываем к объекту
-    childof.target = target_obj
 
-bpy.context.view_layer.update()
-childof.inverse_matrix.identity()
+def main():
+    if bpy.context.mode != 'POSE':
+        print("✗ Нужно выделить кости в Pose Mode")
+        return
 
-# --- bake только empty
-bpy.ops.object.mode_set(mode='OBJECT')
+    obj = bpy.context.active_object
+    selected_bones = bpy.context.selected_pose_bones
 
-# Снимаем выделение со всех объектов
-for o in bpy.context.selected_objects:
-    o.select_set(False)
+    if not selected_bones:
+        print("✗ Нет выделенных костей")
+        return
 
-empty.select_set(True)
-bpy.context.view_layer.objects.active = empty
+    scene = bpy.context.scene
+    start = scene.frame_start
+    end = scene.frame_end
+    empties = []
 
-bpy.ops.nla.bake(
-    frame_start=start,
-    frame_end=end,
-    only_selected=True,
-    visual_keying=True,
-    clear_constraints=False,
-    use_current_action=False,
-    bake_types={'OBJECT'}
-)
+    for bone in selected_bones:
+        empty = create_bonebridge_for_bone(obj, bone)
+        empties.append((bone, empty))
+        print(f"  Создан Empty: {empty.name}")
 
-# --- удаляем Child Of
-for c in empty.constraints:
-    empty.constraints.remove(c)
+    bpy.ops.object.mode_set(mode='OBJECT')
 
-# --- возвращаемся к исходному объекту
-bpy.context.view_layer.objects.active = target_obj
-target_obj.select_set(True)
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
 
-if target_bone:
-    # Если работали с костью - возвращаемся в Pose Mode
+    for bone, empty in empties:
+        empty.select_set(True)
+
+    bpy.context.view_layer.objects.active = empties[0][1]
+
+    bpy.ops.nla.bake(
+        frame_start=start,
+        frame_end=end,
+        only_selected=True,
+        visual_keying=True,
+        clear_constraints=False,
+        use_current_action=False,
+        bake_types={'OBJECT'}
+    )
+
+    for bone, empty in empties:
+        for c in list(empty.constraints):
+            empty.constraints.remove(c)
+
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
     bpy.ops.object.mode_set(mode='POSE')
-    
-    # --- добавляем констрейнты к кости с префиксом reParent
-    copy_loc = target_bone.constraints.new(type='COPY_LOCATION')
-    copy_loc.name = "reParent_COPY_LOCATION"  # Добавляем имя констрейнту
-    copy_loc.target = empty
-    copy_loc.owner_space = 'WORLD'
-    copy_loc.target_space = 'WORLD'
-    
-    copy_rot = target_bone.constraints.new(type='COPY_ROTATION')
-    copy_rot.name = "reParent_COPY_ROTATION"  # Добавляем имя констрейнту
-    copy_rot.target = empty
-    copy_rot.owner_space = 'WORLD'
-    copy_rot.target_space = 'WORLD'
-    
-    # Выходим из Pose Mode
-    bpy.ops.object.mode_set(mode='OBJECT')
-else:
-    # Если работали с объектом - остаёмся в Object Mode
-    bpy.ops.object.mode_set(mode='OBJECT')
-    
-    # --- добавляем констрейнты к объекту с префиксом reParent
-    copy_loc = target_obj.constraints.new(type='COPY_LOCATION')
-    copy_loc.name = "reParent_COPY_LOCATION"  # Добавляем имя констрейнту
-    copy_loc.target = empty
-    copy_loc.owner_space = 'WORLD'
-    copy_loc.target_space = 'WORLD'
-    
-    copy_rot = target_obj.constraints.new(type='COPY_ROTATION')
-    copy_rot.name = "reParent_COPY_ROTATION"  # Добавляем имя констрейнту
-    copy_rot.target = empty
-    copy_rot.owner_space = 'WORLD'
-    copy_rot.target_space = 'WORLD'
 
-# --- финальное выделение пустышки в Object Mode
-bpy.ops.object.mode_set(mode='OBJECT')
-for o in bpy.context.selected_objects:
-    o.select_set(False)
-empty.select_set(True)
-bpy.context.view_layer.objects.active = empty
+    for bone, empty in empties:
+        copy_loc = bone.constraints.new(type='COPY_LOCATION')
+        copy_loc.name = "BoneBridge_COPY_LOCATION"
+        copy_loc.target = empty
+        copy_loc.owner_space = 'WORLD'
+        copy_loc.target_space = 'WORLD'
 
-print(f"Готово! Создан Empty: {empty.name}")
-print("Созданы констрейнты с префиксом 'reParent_'")
+        copy_rot = bone.constraints.new(type='COPY_ROTATION')
+        copy_rot.name = "BoneBridge_COPY_ROTATION"
+        copy_rot.target = empty
+        copy_rot.owner_space = 'WORLD'
+        copy_rot.target_space = 'WORLD'
+
+        print(f"  Констрейнты добавлены к кости: {bone.name}")
+
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+
+    for bone, empty in empties:
+        empty.select_set(True)
+
+    bpy.context.view_layer.objects.active = empties[0][1]
+    print(f"✓ Готово! Создано Empty: {len(empties)}")
+
+
+main()

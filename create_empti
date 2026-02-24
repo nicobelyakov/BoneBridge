@@ -1,0 +1,109 @@
+import bpy
+
+obj = bpy.context.object
+
+if not obj:
+    raise Exception("Нет активного объекта")
+
+# Проверяем, находимся ли мы в Pose Mode и выбрана ли кость
+is_pose_mode_with_bone = (bpy.context.mode == 'POSE' and 
+                          bpy.context.active_pose_bone is not None)
+
+if is_pose_mode_with_bone:
+    # Работаем с костью
+    bone = bpy.context.active_pose_bone
+    target_name = f"{obj.name}_{bone.name}_reParent"
+    target_obj = obj
+    target_bone = bone
+else:
+    # Работаем с обычным объектом
+    if bpy.context.mode != 'OBJECT':
+        raise Exception("Для работы с объектом нужно быть в Object Mode")
+    
+    target_obj = obj
+    target_bone = None
+    target_name = f"{obj.name}_reParent"
+
+scene = bpy.context.scene
+start = scene.frame_start
+end = scene.frame_end
+
+# --- создаём Empty
+empty = bpy.data.objects.new(target_name, None)
+bpy.context.collection.objects.link(empty)
+
+empty.location = (0, 0, 0)
+empty.rotation_euler = (0, 0, 0)
+empty.rotation_mode = target_obj.rotation_mode if target_obj.rotation_mode != 'QUATERNION' else 'XYZ'
+
+# --- Child Of к целевому объекту/кости
+childof = empty.constraints.new(type='CHILD_OF')
+
+if target_bone:
+    # Если есть кость - привязываем к кости
+    childof.target = target_obj
+    childof.subtarget = target_bone.name
+else:
+    # Если обычный объект - привязываем к объекту
+    childof.target = target_obj
+
+bpy.context.view_layer.update()
+childof.inverse_matrix.identity()
+
+# --- bake только empty
+bpy.ops.object.mode_set(mode='OBJECT')
+
+for o in bpy.context.selected_objects:
+    o.select_set(False)
+
+empty.select_set(True)
+bpy.context.view_layer.objects.active = empty
+
+bpy.ops.nla.bake(
+    frame_start=start,
+    frame_end=end,
+    only_selected=True,
+    visual_keying=True,
+    clear_constraints=False,
+    use_current_action=False,
+    bake_types={'OBJECT'}
+)
+
+# --- удаляем Child Of
+for c in empty.constraints:
+    empty.constraints.remove(c)
+
+# --- возвращаемся к исходному объекту
+bpy.context.view_layer.objects.active = target_obj
+target_obj.select_set(True)
+
+if target_bone:
+    # Если работали с костью - возвращаемся в Pose Mode
+    bpy.ops.object.mode_set(mode='POSE')
+    
+    # --- добавляем констрейнты к кости
+    copy_loc = target_bone.constraints.new(type='COPY_LOCATION')
+    copy_loc.target = empty
+    copy_loc.owner_space = 'WORLD'
+    copy_loc.target_space = 'WORLD'
+    
+    copy_rot = target_bone.constraints.new(type='COPY_ROTATION')
+    copy_rot.target = empty
+    copy_rot.owner_space = 'WORLD'
+    copy_rot.target_space = 'WORLD'
+else:
+    # Если работали с объектом - остаёмся в Object Mode
+    bpy.ops.object.mode_set(mode='OBJECT')
+    
+    # --- добавляем констрейнты к объекту
+    copy_loc = target_obj.constraints.new(type='COPY_LOCATION')
+    copy_loc.target = empty
+    copy_loc.owner_space = 'WORLD'
+    copy_loc.target_space = 'WORLD'
+    
+    copy_rot = target_obj.constraints.new(type='COPY_ROTATION')
+    copy_rot.target = empty
+    copy_rot.owner_space = 'WORLD'
+    copy_rot.target_space = 'WORLD'
+
+print(f"Готово! Создан Empty: {empty.name}") 

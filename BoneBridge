@@ -23,8 +23,8 @@ def select_bone_in_pose_mode(armature, bone_name):
 # РЕЖИМ 1: КОСТИ → СОЗДАТЬ EMPTY + КОНСТРЕЙНТЫ
 # ========================
 
-def create_reparent_for_bone(obj, bone):
-    target_name = f"{obj.name}_{bone.name}_reParent"
+def create_bonebridge_for_bone(obj, bone):
+    target_name = f"{obj.name}_{bone.name}_BoneBridge"
     scene = bpy.context.scene
     start = scene.frame_start
     end = scene.frame_end
@@ -39,7 +39,7 @@ def create_reparent_for_bone(obj, bone):
 
     # --- Child Of к кости
     childof = empty.constraints.new(type='CHILD_OF')
-    childof.name = "reParent_CHILD_OF"
+    childof.name = "BoneBridge_CHILD_OF"
     childof.target = obj
     childof.subtarget = bone.name
 
@@ -49,7 +49,7 @@ def create_reparent_for_bone(obj, bone):
     return empty
 
 
-def run_create_reparent(obj, selected_bones):
+def run_create_bonebridge(obj, selected_bones):
     scene = bpy.context.scene
     start = scene.frame_start
     end = scene.frame_end
@@ -57,7 +57,7 @@ def run_create_reparent(obj, selected_bones):
     empties = []
 
     for bone in selected_bones:
-        empty = create_reparent_for_bone(obj, bone)
+        empty = create_bonebridge_for_bone(obj, bone)
         empties.append((bone, empty))
         print(f"  Создан Empty: {empty.name}")
 
@@ -96,13 +96,13 @@ def run_create_reparent(obj, selected_bones):
     # --- Добавляем констрейнты к костям
     for bone, empty in empties:
         copy_loc = bone.constraints.new(type='COPY_LOCATION')
-        copy_loc.name = "reParent_COPY_LOCATION"
+        copy_loc.name = "BoneBridge_COPY_LOCATION"
         copy_loc.target = empty
         copy_loc.owner_space = 'WORLD'
         copy_loc.target_space = 'WORLD'
 
         copy_rot = bone.constraints.new(type='COPY_ROTATION')
-        copy_rot.name = "reParent_COPY_ROTATION"
+        copy_rot.name = "BoneBridge_COPY_ROTATION"
         copy_rot.target = empty
         copy_rot.owner_space = 'WORLD'
         copy_rot.target_space = 'WORLD'
@@ -145,16 +145,16 @@ def bake_bones(armature, bone_names):
     print(f"✓ Bake завершён для {len(bone_names)} костей")
 
 
-def remove_reparent_constraints(armature, bone_name):
+def remove_bonebridge_constraints(armature, bone_name):
     if bone_name not in armature.pose.bones:
         print(f"  ✗ Кость {bone_name} не найдена")
         return
 
     pose_bone = armature.pose.bones[bone_name]
-    to_remove = [c for c in pose_bone.constraints if 'reParent' in c.name]
+    to_remove = [c for c in pose_bone.constraints if 'BoneBridge' in c.name]
 
     if not to_remove:
-        print(f"  ✗ Констрейны 'reParent' не найдены у кости {bone_name}")
+        print(f"  ✗ Констрейны 'BoneBridge' не найдены у кости {bone_name}")
         return
 
     for constraint in to_remove:
@@ -163,12 +163,12 @@ def remove_reparent_constraints(armature, bone_name):
     print(f"  ✓ Удалено констрейнов у {bone_name}: {len(to_remove)}")
 
 
-def run_bake_reparent(empty_objects):
+def run_bake_bonebridge(empty_objects):
     # --- Парсим имена, находим арматуры и кости
     tasks = []  # (empty, armature, bone_name)
 
     for empty in empty_objects:
-        match = re.match(r'(.+)_(.+)_reParent', empty.name)
+        match = re.match(r'(.+)_(.+)_BoneBridge', empty.name)
         if not match:
             print(f"  ✗ Неверный формат имени: {empty.name}, пропускаем")
             continue
@@ -236,7 +236,7 @@ def run_bake_reparent(empty_objects):
 
         # Удаляем констрейнты
         for bone_name in found_bones:
-            remove_reparent_constraints(armature, bone_name)
+            remove_bonebridge_constraints(armature, bone_name)
 
         # Выходим в Object Mode
         bpy.ops.object.mode_set(mode='OBJECT')
@@ -280,14 +280,14 @@ def main():
         print("✗ Нет активного объекта")
         return
 
-    # Режим 2: выбраны пустышки с суффиксом _reParent
-    if active.type == 'EMPTY' and active.name.endswith('_reParent'):
+    # Режим 2: выбраны пустышки с суффиксом _BoneBridge
+    if active.type == 'EMPTY' and active.name.endswith('_BoneBridge'):
         selected_empties = [
             o for o in bpy.context.selected_objects
-            if o.type == 'EMPTY' and o.name.endswith('_reParent')
+            if o.type == 'EMPTY' and o.name.endswith('_BoneBridge')
         ]
         print(f"→ Режим: Bake костей и удаление Empty ({len(selected_empties)} шт.)")
-        run_bake_reparent(selected_empties)
+        run_bake_bonebridge(selected_empties)
 
     # Режим 1: кости в Pose Mode
     elif bpy.context.mode == 'POSE':
@@ -297,10 +297,10 @@ def main():
             return
         obj = bpy.context.active_object
         print(f"→ Режим: Создание Empty и констрейнтов ({len(selected_bones)} костей)")
-        run_create_reparent(obj, selected_bones)
+        run_create_bonebridge(obj, selected_bones)
 
     else:
-        print("✗ Выделите кости в Pose Mode или пустышки с суффиксом '_reParent'")
+        print("✗ Выделите кости в Pose Mode или пустышки с суффиксом '_BoneBridge'")
 
 
 main()

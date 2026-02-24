@@ -1,0 +1,167 @@
+import bpy
+
+
+def find_bonebridge_empty(armature, bone_name):
+    """Ищет пустышку по custom properties для данной кости"""
+    for obj in bpy.data.objects:
+        if (obj.type == 'EMPTY'
+                and obj.get("bonebridge_rig") == armature.name
+                and obj.get("bonebridge_bone") == bone_name):
+            return obj
+    return None
+
+
+def collect_tasks():
+    """
+    Собирает задачи из выделенных объектов.
+    Принимает: пустышки с bonebridge properties,
+    а также кости в Pose Mode у которых есть связанная пустышка.
+    Возвращает список (empty, armature, bone_name).
+    """
+    tasks = []
+    seen_empties = set()
+
+    active = bpy.context.active_object
+
+    # --- Если выделены пустышки в Object Mode
+    if bpy.context.mode == 'OBJECT':
+        for obj in bpy.context.selected_objects:
+            if obj.type != 'EMPTY':
+                continue
+            rig_name = obj.get("bonebridge_rig")
+            bone_name = obj.get("bonebridge_bone")
+            if not rig_name or not bone_name:
+                print(f"  ✗ Нет BoneBridge properties на '{obj.name}', пропускаем")
+                continue
+            armature = bpy.data.objects.get(rig_name)
+            if not armature or armature.type != 'ARMATURE':
+                print(f"  ✗ Арматура '{rig_name}' не найдена, пропускаем")
+                continue
+            if id(obj) not in seen_empties:
+                tasks.append((obj, armature, bone_name))
+                seen_empties.add(id(obj))
+
+    # --- Если выделены кости в Pose Mode
+    elif bpy.context.mode == 'POSE':
+        armature = active
+        for pose_bone in bpy.context.selected_pose_bones:
+            empty = find_bonebridge_empty(armature, pose_bone.name)
+            if not empty:
+                print(f"  ✗ Пустышка для кости '{pose_bone.name}' не найдена, пропускаем")
+                continue
+            if id(empty) not in seen_empties:
+                tasks.append((empty, armature, pose_bone.name))
+                seen_empties.add(id(empty))
+
+    return tasks
+
+
+def bake_and_cleanup(tasks):
+    # --- Группируем по арматуре
+    by_armature = {}
+    for empty, armature, bone_name in tasks:
+        key = armature.name
+        if key not in by_armature:
+            by_armature[key] = {'armature': armature, 'items': []}
+        by_armature[key]['items'].append((empty, bone_name))
+
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+
+    for rig_name, data in by_armature.items():
+        armature = data['armature']
+        items = data['items']
+
+        print(f"\nОбработка арматуры: {rig_name}, костей: {len(items)}")
+
+        bpy.context.view_layer.objects.active = armature
+        armature.select_set(True)
+        bpy.ops.object.mode_set(mode='POSE')
+
+        for pb in armature.pose.bones:
+            pb.select = False
+        armature.data.bones.active = None
+
+        found_bones = []
+        for empty, bone_name in items:
+            if bone_name in armature.pose.bones:
+                armature.pose.bones[bone_name].select = True
+                armature.data.bones.active = armature.data.bones[bone_name]
+                found_bones.append(bone_name)
+                print(f"  ✓ Кость выделена: {bone_name}")
+            else:
+                print(f"  ✗ Кость не найдена: {bone_name}")
+
+        if not found_bones:
+            bpy.ops.object.mode_set(mode='OBJECT')
+            continue
+
+        scene = bpy.context.scene
+        bpy.ops.nla.bake(
+            frame_start=scene.frame_start,
+            frame_end=scene.frame_end,
+            only_selected=True,
+            visual_keying=True,
+            clear_constraints=False,
+            clear_parents=False,
+            use_current_action=True,
+            clean_curves=False,
+            bake_types={'POSE'}
+        )
+        print(f"  ✓ Bake завершён")
+
+        # Удаляем BoneBridge констрейнты
+        for bone_name in found_bones:
+            pose_bone = armature.pose.bones[bone_name]
+            to_remove = [c for c in pose_bone.constraints if 'BoneBridge' in c.name]
+            for c in to_remove:
+                pose_bone.constraints.remove(c)
+            print(f"  ✓ Констрейнты удалены у кости: {bone_name}")
+
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+    # --- Удаляем пустышки
+    bpy.ops.object.select_all(action='DESELECT')
+    for empty, armature, bone_name in tasks:
+        empty.select_set(True)
+
+    bpy.ops.object.delete()
+    print(f"\n✓ Удалено пустышек: {len(tasks)}")
+
+    # --- Возвращаемся к последней арматуре в Pose Mode
+    last_armature = tasks[-1][1]
+    bpy.context.view_layer.objects.active = last_armature
+    last_armature.select_set(True)
+    bpy.ops.object.mode_set(mode='POSE')
+
+    for pb in last_armature.pose.bones:
+        pb.select = False
+
+    for empty, armature, bone_name in tasks:
+        if armature == last_armature and bone_name in armature.pose.bones:
+            armature.pose.bones[bone_name].select = True
+            armature.data.bones.active = armature.data.bones[bone_name]
+
+    print("✓ Все операции завершены")
+
+
+def main():
+    active = bpy.context.active_object
+
+    if not active:
+        print("✗ Нет активного объекта")
+        return
+
+    tasks = collect_tasks()
+
+    if not tasks:
+        print("✗ Нет валидных объектов для обработки")
+        print("  Выделите пустышки с BoneBridge properties (Object Mode)")
+        print("  или кости с привязанными пустышками (Pose Mode)")
+        return
+
+    print(f"→ Найдено задач: {len(tasks)}")
+    bake_and_cleanup(tasks)
+
+
+main()

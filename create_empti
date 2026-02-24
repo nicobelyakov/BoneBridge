@@ -53,6 +53,7 @@ childof.inverse_matrix.identity()
 # --- bake только empty
 bpy.ops.object.mode_set(mode='OBJECT')
 
+# Снимаем выделение со всех объектов
 for o in bpy.context.selected_objects:
     o.select_set(False)
 
@@ -91,6 +92,9 @@ if target_bone:
     copy_rot.target = empty
     copy_rot.owner_space = 'WORLD'
     copy_rot.target_space = 'WORLD'
+    
+    # Выходим из Pose Mode и выделяем пустышку
+    bpy.ops.object.mode_set(mode='OBJECT')
 else:
     # Если работали с объектом - остаёмся в Object Mode
     bpy.ops.object.mode_set(mode='OBJECT')
@@ -106,4 +110,11 @@ else:
     copy_rot.owner_space = 'WORLD'
     copy_rot.target_space = 'WORLD'
 
-print(f"Готово! Создан Empty: {empty.name}") 
+# --- финальное выделение пустышки в Object Mode
+bpy.ops.object.mode_set(mode='OBJECT')
+for o in bpy.context.selected_objects:
+    o.select_set(False)
+empty.select_set(True)
+bpy.context.view_layer.objects.active = empty
+
+print(f"Готово! Создан Empty: {empty.name}")

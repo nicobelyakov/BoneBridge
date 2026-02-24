@@ -38,6 +38,7 @@ empty.rotation_mode = target_obj.rotation_mode if target_obj.rotation_mode != 'Q
 
 # --- Child Of к целевому объекту/кости
 childof = empty.constraints.new(type='CHILD_OF')
+childof.name = "reParent_CHILD_OF"  # Добавляем имя констрейнту
 
 if target_bone:
     # Если есть кость - привязываем к кости
@@ -82,30 +83,34 @@ if target_bone:
     # Если работали с костью - возвращаемся в Pose Mode
     bpy.ops.object.mode_set(mode='POSE')
     
-    # --- добавляем констрейнты к кости
+    # --- добавляем констрейнты к кости с префиксом reParent
     copy_loc = target_bone.constraints.new(type='COPY_LOCATION')
+    copy_loc.name = "reParent_COPY_LOCATION"  # Добавляем имя констрейнту
     copy_loc.target = empty
     copy_loc.owner_space = 'WORLD'
     copy_loc.target_space = 'WORLD'
     
     copy_rot = target_bone.constraints.new(type='COPY_ROTATION')
+    copy_rot.name = "reParent_COPY_ROTATION"  # Добавляем имя констрейнту
     copy_rot.target = empty
     copy_rot.owner_space = 'WORLD'
     copy_rot.target_space = 'WORLD'
     
-    # Выходим из Pose Mode и выделяем пустышку
+    # Выходим из Pose Mode
     bpy.ops.object.mode_set(mode='OBJECT')
 else:
     # Если работали с объектом - остаёмся в Object Mode
     bpy.ops.object.mode_set(mode='OBJECT')
     
-    # --- добавляем констрейнты к объекту
+    # --- добавляем констрейнты к объекту с префиксом reParent
     copy_loc = target_obj.constraints.new(type='COPY_LOCATION')
+    copy_loc.name = "reParent_COPY_LOCATION"  # Добавляем имя констрейнту
     copy_loc.target = empty
     copy_loc.owner_space = 'WORLD'
     copy_loc.target_space = 'WORLD'
     
     copy_rot = target_obj.constraints.new(type='COPY_ROTATION')
+    copy_rot.name = "reParent_COPY_ROTATION"  # Добавляем имя констрейнту
     copy_rot.target = empty
     copy_rot.owner_space = 'WORLD'
     copy_rot.target_space = 'WORLD'
@@ -118,3 +123,4 @@ empty.select_set(True)
 bpy.context.view_layer.objects.active = empty
 
 print(f"Готово! Создан Empty: {empty.name}")
+print("Созданы констрейнты с префиксом 'reParent_'")

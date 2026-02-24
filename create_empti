@@ -35,7 +35,7 @@ def create_reparent_for_bone(obj, bone):
 
     empty.location = (0, 0, 0)
     empty.rotation_euler = (0, 0, 0)
-    empty.rotation_mode = obj.rotation_mode if obj.rotation_mode != 'QUATERNION' else 'XYZ'
+    empty.rotation_mode = bone.rotation_mode
 
     # --- Child Of к кости
     childof = empty.constraints.new(type='CHILD_OF')

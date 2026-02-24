@@ -1,5 +1,4 @@
 import bpy
-import re
 
 
 # ========================
@@ -26,8 +25,6 @@ def select_bone_in_pose_mode(armature, bone_name):
 def create_bonebridge_for_bone(obj, bone):
     target_name = f"{obj.name}_{bone.name}_BoneBridge"
     scene = bpy.context.scene
-    start = scene.frame_start
-    end = scene.frame_end
 
     # --- Создаём Empty
     empty = bpy.data.objects.new(target_name, None)
@@ -36,6 +33,10 @@ def create_bonebridge_for_bone(obj, bone):
     empty.location = (0, 0, 0)
     empty.rotation_euler = (0, 0, 0)
     empty.rotation_mode = bone.rotation_mode
+
+    # --- Сохраняем rig и bone в custom properties
+    empty["bonebridge_rig"] = obj.name
+    empty["bonebridge_bone"] = bone.name
 
     # --- Child Of к кости
     childof = empty.constraints.new(type='CHILD_OF')
@@ -164,16 +165,17 @@ def remove_bonebridge_constraints(armature, bone_name):
 
 
 def run_bake_bonebridge(empty_objects):
-    # --- Парсим имена, находим арматуры и кости
     tasks = []  # (empty, armature, bone_name)
 
     for empty in empty_objects:
-        match = re.match(r'(.+)_(.+)_BoneBridge', empty.name)
-        if not match:
-            print(f"  ✗ Неверный формат имени: {empty.name}, пропускаем")
+        # --- Читаем данные из custom properties вместо парсинга имени
+        rig_name = empty.get("bonebridge_rig")
+        bone_name = empty.get("bonebridge_bone")
+
+        if not rig_name or not bone_name:
+            print(f"  ✗ Custom properties не найдены на '{empty.name}', пропускаем")
             continue
 
-        rig_name, bone_name = match.groups()
         armature = bpy.data.objects.get(rig_name)
 
         if not armature or armature.type != 'ARMATURE':
@@ -194,7 +196,7 @@ def run_bake_bonebridge(empty_objects):
             by_armature[key] = {'armature': armature, 'items': []}
         by_armature[key]['items'].append((empty, bone_name))
 
-    # --- Снимаем выделение с пустышек
+    # --- Снимаем выделение
     for o in bpy.context.selected_objects:
         o.select_set(False)
 
@@ -206,17 +208,14 @@ def run_bake_bonebridge(empty_objects):
 
         print(f"\nОбработка арматуры: {rig_name}, костей: {len(items)}")
 
-        # Входим в Pose Mode и выделяем все нужные кости
         bpy.context.view_layer.objects.active = armature
         armature.select_set(True)
         bpy.ops.object.mode_set(mode='POSE')
 
-        # Снимаем выделение со всех костей
         for pb in armature.pose.bones:
             pb.select = False
         armature.data.bones.active = None
 
-        # Выделяем нужные кости
         found_bones = []
         for bone_name in bone_names:
             if bone_name in armature.pose.bones:
@@ -231,14 +230,11 @@ def run_bake_bonebridge(empty_objects):
             bpy.ops.object.mode_set(mode='OBJECT')
             continue
 
-        # Bake всех костей этой арматуры за один раз
         bake_bones(armature, found_bones)
 
-        # Удаляем констрейнты
         for bone_name in found_bones:
             remove_bonebridge_constraints(armature, bone_name)
 
-        # Выходим в Object Mode
         bpy.ops.object.mode_set(mode='OBJECT')
 
     # --- Удаляем все empty
@@ -246,11 +242,11 @@ def run_bake_bonebridge(empty_objects):
     for empty, armature, bone_name in tasks:
         empty.select_set(True)
 
-    count = len([t for t in tasks])
+    count = len(tasks)
     bpy.ops.object.delete()
     print(f"\n✓ Удалено пустышек: {count}")
 
-    # --- Возвращаемся к последней арматуре, выделяем кости
+    # --- Возвращаемся к последней арматуре
     last_armature = tasks[-1][1]
     last_bone = tasks[-1][2]
 
@@ -280,11 +276,11 @@ def main():
         print("✗ Нет активного объекта")
         return
 
-    # Режим 2: выбраны пустышки с суффиксом _BoneBridge
-    if active.type == 'EMPTY' and active.name.endswith('_BoneBridge'):
+    # Режим 2: выбраны пустышки с custom property bonebridge_rig
+    if active.type == 'EMPTY' and active.get("bonebridge_rig"):
         selected_empties = [
             o for o in bpy.context.selected_objects
-            if o.type == 'EMPTY' and o.name.endswith('_BoneBridge')
+            if o.type == 'EMPTY' and o.get("bonebridge_rig")
         ]
         print(f"→ Режим: Bake костей и удаление Empty ({len(selected_empties)} шт.)")
         run_bake_bonebridge(selected_empties)
@@ -300,7 +296,7 @@ def main():
         run_create_bonebridge(obj, selected_bones)
 
     else:
-        print("✗ Выделите кости в Pose Mode или пустышки с суффиксом '_BoneBridge'")
+        print("✗ Выделите кости в Pose Mode или пустышки с BoneBridge properties")
 
 
 main()

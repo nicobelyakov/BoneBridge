@@ -4,7 +4,7 @@ import bpy
 def create_bonebridge_for_bone(obj, bone):
     target_name = f"{obj.name}_{bone.name}_BoneBridge"
     empty = bpy.data.objects.new(target_name, None)
-    bpy.context.collection.objects.link(empty)
+    bpy.context.scene.collection.objects.link(empty)  # корневая коллекция сцены
     empty.location = (0, 0, 0)
     empty.rotation_euler = (0, 0, 0)
     empty.rotation_mode = bone.rotation_mode

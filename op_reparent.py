@@ -4,10 +4,11 @@ import bpy
 def create_bonebridge_for_bone(obj, bone):
     target_name = f"{obj.name}_{bone.name}_BoneBridge"
     empty = bpy.data.objects.new(target_name, None)
-    bpy.context.scene.collection.objects.link(empty)  # корневая коллекция сцены
+    bpy.context.scene.collection.objects.link(empty)  # <- корневая коллекция сцены
     empty.location = (0, 0, 0)
     empty.rotation_euler = (0, 0, 0)
     empty.rotation_mode = bone.rotation_mode
+    empty.empty_display_size = bone.length*1.5  # <- размер пустышки = длина кости
     empty["bonebridge_rig"] = obj.name
     empty["bonebridge_bone"] = bone.name
     childof = empty.constraints.new(type='CHILD_OF')

@@ -4,7 +4,7 @@ from . import op_bake_and_delete
 
 bl_info = {
     "name": "BoneBridge",
-    "author": "nicobelyakov",
+    "author": "NicoBelyakov",
     "version": (1, 0, 0),
     "blender": (4, 0, 0),
     "location": "View3D → N-panel → Item",

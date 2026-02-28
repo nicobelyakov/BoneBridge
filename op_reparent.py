@@ -1,14 +1,13 @@
 import bpy
 
-
 def create_bonebridge_for_bone(obj, bone):
     target_name = f"{obj.name}_{bone.name}_BoneBridge"
     empty = bpy.data.objects.new(target_name, None)
-    bpy.context.scene.collection.objects.link(empty)  # <- корневая коллекция сцены
+    bpy.context.scene.collection.objects.link(empty)
     empty.location = (0, 0, 0)
     empty.rotation_euler = (0, 0, 0)
     empty.rotation_mode = bone.rotation_mode
-    empty.empty_display_size = bone.length*1.5  # <- размер пустышки = длина кости
+    empty.empty_display_size = bone.length * 1.5
     empty["bonebridge_rig"] = obj.name
     empty["bonebridge_bone"] = bone.name
     childof = empty.constraints.new(type='CHILD_OF')
@@ -19,25 +18,20 @@ def create_bonebridge_for_bone(obj, bone):
     childof.inverse_matrix.identity()
     return empty
 
-
 def run_create(obj, selected_bones):
     scene = bpy.context.scene
     start = scene.frame_start
     end = scene.frame_end
-
     empties = []
     for bone in selected_bones:
         empty = create_bonebridge_for_bone(obj, bone)
         empties.append((bone, empty))
-
     bpy.ops.object.mode_set(mode='OBJECT')
-
     for o in bpy.context.selected_objects:
         o.select_set(False)
     for bone, empty in empties:
         empty.select_set(True)
     bpy.context.view_layer.objects.active = empties[0][1]
-
     bpy.ops.nla.bake(
         frame_start=start,
         frame_end=end,
@@ -48,43 +42,44 @@ def run_create(obj, selected_bones):
         bake_types={'OBJECT'}
     )
 
-        # Установить интерполяцию Bezier и handle type Auto Clamped для всех кривых
+    # Установить интерполяцию Bezier и handle type Auto Clamped
+    bpy.context.view_layer.update()
     for bone, empty in empties:
         if empty.animation_data and empty.animation_data.action:
-            for fcurve in empty.animation_data.action.fcurves:
-                for keyframe in fcurve.keyframe_points:
-                    keyframe.interpolation = 'BEZIER'
-                    keyframe.handle_left_type = 'AUTO_CLAMPED'
-                    keyframe.handle_right_type = 'AUTO_CLAMPED'
+            action = empty.animation_data.action
+            for layer in action.layers:
+                for strip in layer.strips:
+                    for channelbag in strip.channelbags:
+                        for fcurve in channelbag.fcurves:
+                            for keyframe in fcurve.keyframe_points:
+                                keyframe.interpolation = 'BEZIER'
+                                keyframe.handle_left_type = 'AUTO_CLAMPED'
+                                keyframe.handle_right_type = 'AUTO_CLAMPED'
+                            fcurve.update()
 
     for bone, empty in empties:
         for c in list(empty.constraints):
             empty.constraints.remove(c)
-
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
     bpy.ops.object.mode_set(mode='POSE')
-
     for bone, empty in empties:
         copy_loc = bone.constraints.new(type='COPY_LOCATION')
         copy_loc.name = "BoneBridge_COPY_LOCATION"
         copy_loc.target = empty
         copy_loc.owner_space = 'WORLD'
         copy_loc.target_space = 'WORLD'
-
         copy_rot = bone.constraints.new(type='COPY_ROTATION')
         copy_rot.name = "BoneBridge_COPY_ROTATION"
         copy_rot.target = empty
         copy_rot.owner_space = 'WORLD'
         copy_rot.target_space = 'WORLD'
-
     bpy.ops.object.mode_set(mode='OBJECT')
     for o in bpy.context.selected_objects:
         o.select_set(False)
     for bone, empty in empties:
         empty.select_set(True)
     bpy.context.view_layer.objects.active = empties[0][1]
-
 
 class BONEBRIDGE_OT_create(bpy.types.Operator):
     bl_idname = "bonebridge.create"

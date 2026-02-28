@@ -48,6 +48,15 @@ def run_create(obj, selected_bones):
         bake_types={'OBJECT'}
     )
 
+        # Установить интерполяцию Bezier и handle type Auto Clamped для всех кривых
+    for bone, empty in empties:
+        if empty.animation_data and empty.animation_data.action:
+            for fcurve in empty.animation_data.action.fcurves:
+                for keyframe in fcurve.keyframe_points:
+                    keyframe.interpolation = 'BEZIER'
+                    keyframe.handle_left_type = 'AUTO_CLAMPED'
+                    keyframe.handle_right_type = 'AUTO_CLAMPED'
+
     for bone, empty in empties:
         for c in list(empty.constraints):
             empty.constraints.remove(c)

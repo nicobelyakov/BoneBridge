@@ -42,7 +42,7 @@ def run_create(obj, selected_bones):
         bake_types={'OBJECT'}
     )
 
-    # Установить интерполяцию Bezier и handle type Auto Clamped
+    # Установить интерполяцию Bezier и handle type Auto Clamped (Blender 5.0+)
     bpy.context.view_layer.update()
     for bone, empty in empties:
         if empty.animation_data and empty.animation_data.action:
@@ -81,6 +81,7 @@ def run_create(obj, selected_bones):
         empty.select_set(True)
     bpy.context.view_layer.objects.active = empties[0][1]
 
+
 class BONEBRIDGE_OT_create(bpy.types.Operator):
     bl_idname = "bonebridge.create"
     bl_label = "reParent"
@@ -101,3 +102,12 @@ class BONEBRIDGE_OT_create(bpy.types.Operator):
         run_create(obj, selected_bones)
         self.report({'INFO'}, f"BoneBridge создан для {len(selected_bones)} костей")
         return {'FINISHED'}
+
+
+if __name__ == "__main__":
+    try:
+        bpy.utils.unregister_class(BONEBRIDGE_OT_create)
+    except:
+        pass
+    bpy.utils.register_class(BONEBRIDGE_OT_create)
+    bpy.ops.bonebridge.create()

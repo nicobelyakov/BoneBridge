@@ -34,6 +34,15 @@ def bone_in_path(bone_name, data_path):
     return f'"{bone_name}"' in data_path or f"'{bone_name}'" in data_path
 
 
+def copy_rotation_mode(obj, original_bone_names, mirror_bone_names):
+    """Копируем rotation_mode с исходных костей на зеркальные."""
+    for orig_name, mirror_name in zip(original_bone_names, mirror_bone_names):
+        if orig_name in obj.pose.bones and mirror_name in obj.pose.bones:
+            orig_pb = obj.pose.bones[orig_name]
+            mirror_pb = obj.pose.bones[mirror_name]
+            mirror_pb.rotation_mode = orig_pb.rotation_mode
+
+
 def run_flip_animation(obj, original_bone_names, mirror_bone_names):
     scene = bpy.context.scene
     frame_start = scene.frame_start
@@ -45,6 +54,9 @@ def run_flip_animation(obj, original_bone_names, mirror_bone_names):
         return False, "No action found on armature"
 
     all_fcurves = get_all_fcurves(action)
+
+    # Копируем rotation_mode перед копированием анимации
+    copy_rotation_mode(obj, original_bone_names, mirror_bone_names)
 
     # Удаляем все ключи у зеркальных костей
     for fc in all_fcurves:
@@ -112,6 +124,10 @@ class BONEBRIDGE_OT_flip_animation(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
+        scene = context.scene
+
+        # Запоминаем текущий кадр — вернёмся сюда после выполнения
+        saved_frame = scene.frame_current
 
         # Запоминаем исходные кости
         original_bone_names = get_selected_bone_names()
@@ -132,8 +148,10 @@ class BONEBRIDGE_OT_flip_animation(bpy.types.Operator):
 
         ok, msg = run_flip_animation(obj, original_bone_names, mirror_bone_names)
 
+        # Возвращаемся в кадр, с которого запустили скрипт
+        scene.frame_set(saved_frame)
+
         if ok:
-            # В конце выделяем исходные кости
             select_bones_by_name(obj, original_bone_names)
             self.report({'INFO'}, msg)
             return {'FINISHED'}

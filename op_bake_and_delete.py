@@ -120,7 +120,7 @@ class BONEBRIDGE_OT_bake_and_delete(bpy.types.Operator):
     bl_idname = "bonebridge.bake_and_delete"
     bl_label = "Bake and Delete"
     bl_description = (
-        "Bake костей и удалить BoneBridge Empty. "
+        "Bake костей и удалить Bone Bridge Empty. "
         "Object Mode: выделить пустышки. Pose Mode: выделить кости"
     )
     bl_options = {'REGISTER', 'UNDO'}

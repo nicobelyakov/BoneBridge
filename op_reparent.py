@@ -85,7 +85,7 @@ def run_create(obj, selected_bones):
 class BONEBRIDGE_OT_create(bpy.types.Operator):
     bl_idname = "bonebridge.create"
     bl_label = "reParent"
-    bl_description = "Создать BoneBridge Empty для выделенных костей"
+    bl_description = "Создать Bone Bridge Empty для выделенных костей"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -100,7 +100,7 @@ class BONEBRIDGE_OT_create(bpy.types.Operator):
         obj = context.active_object
         selected_bones = context.selected_pose_bones
         run_create(obj, selected_bones)
-        self.report({'INFO'}, f"BoneBridge создан для {len(selected_bones)} костей")
+        self.report({'INFO'}, f"Bone Bridge создан для {len(selected_bones)} костей")
         return {'FINISHED'}
 
 

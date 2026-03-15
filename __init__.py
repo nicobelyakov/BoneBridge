@@ -16,7 +16,7 @@ import json
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Bone Bridge — unified addon
-#  Четыре режима: reParent | reParent Aim | Manual Pivot | reConstrain
+#  Три режима: reParent | reParent Aim | Manual Pivot
 #  Панель: N-panel > Item > Bone Bridge
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -26,17 +26,9 @@ CTRL_ARM_NAME  = "BoneBridge_Armature_Control"
 SCENE_KEY_AIM  = "bb_aim_session"
 SCENE_KEY_MP   = "bb_manual_pivot_session"
 
-# Bone name prefixes
-MP_PREFIX        = "MPIVOT_"
-MPC_PREFIX       = "MPIVOT_CHILD_"
-BB_PREFIX        = "BB_"
-AIM_LOC_PREFIX   = "AIM_LOC_"
-RC_PREFIX        = "RC_"
-RC_PARENT_PREFIX = "RC_PARENT_"
-CM_PARENT_PREFIX = "CM_PARENT_"
-CM_CTRL_PREFIX   = "CM_CONTROL_"
-CM_CHILD_PREFIX  = "CM_CHILD_"
-PIVOT_PREFIX     = "PIVOT_"
+# Prefixes
+MP_PREFIX   = "MPIVOT_"
+MPC_PREFIX  = "MPIVOT_CHILD_"
 
 TRACK_AXIS  = 'TRACK_Y'
 
@@ -349,14 +341,10 @@ def aim_unlock_all(pb):
 #  MODE 1 — reParent
 # ══════════════════════════════════════════════════════════════════════════════
 
-def rp_ctrl_name(src): return f"{BB_PREFIX}{src}"
+def rp_ctrl_name(src): return f"BB_{src}"
 
 
-def rp_run(source_obj, selected_bones, global_mode=False):
-    """reParent.
-    global_mode=False: source получает Copy Loc + Copy Rot от BB_.
-    global_mode=True:  BB_ получает Copy Loc от source; source получает только Copy Rot от BB_.
-    """
+def rp_run(source_obj, selected_bones):
     scene = bpy.context.scene
     start = scene.frame_start
     end   = scene.frame_end
@@ -464,62 +452,174 @@ def rp_run(source_obj, selected_bones, global_mode=False):
     for sb in selected_bones:
         tag_bone(arm_obj, rp_ctrl_name(sb.name), source_obj, sb.name)
 
-    if global_mode:
-        # BB_ → Copy Location от source; source → только Copy Rotation от BB_
-        bpy.context.view_layer.objects.active = arm_obj
-        bpy.ops.object.mode_set(mode='POSE')
-        for sb in selected_bones:
-            cname = rp_ctrl_name(sb.name)
-            pb = arm_obj.pose.bones[cname]
-            for c in [c for c in list(pb.constraints) if "BoneBridge" in c.name]:
-                pb.constraints.remove(c)
-            cl = pb.constraints.new(type='COPY_LOCATION')
-            cl.name         = "BoneBridge_COPY_LOCATION"
-            cl.target       = source_obj
-            cl.subtarget    = sb.name
-            cl.owner_space  = 'WORLD'
-            cl.target_space = 'WORLD'
+    # Copy Loc/Rot on source bones
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+    bpy.context.view_layer.objects.active = source_obj
+    source_obj.select_set(True)
+    bpy.ops.object.mode_set(mode='POSE')
 
-        for o in bpy.context.selected_objects:
-            o.select_set(False)
-        bpy.context.view_layer.objects.active = source_obj
-        source_obj.select_set(True)
-        bpy.ops.object.mode_set(mode='POSE')
-
-        for sb in selected_bones:
-            cname = rp_ctrl_name(sb.name)
-            for c in [c for c in sb.constraints if "BoneBridge" in c.name]:
-                sb.constraints.remove(c)
-            cr = sb.constraints.new(type='COPY_ROTATION')
-            cr.name         = "BoneBridge_COPY_ROTATION"
-            cr.target       = arm_obj
-            cr.subtarget    = cname
-            cr.owner_space  = 'WORLD'
-            cr.target_space = 'WORLD'
-    else:
-        # source → Copy Location + Copy Rotation от BB_
-        for o in bpy.context.selected_objects:
-            o.select_set(False)
-        bpy.context.view_layer.objects.active = source_obj
-        source_obj.select_set(True)
-        bpy.ops.object.mode_set(mode='POSE')
-
-        for sb in selected_bones:
-            cname = rp_ctrl_name(sb.name)
-            for c in [c for c in sb.constraints if "BoneBridge" in c.name]:
-                sb.constraints.remove(c)
-            cl = sb.constraints.new(type='COPY_LOCATION')
-            cl.name = "BoneBridge_COPY_LOCATION"
-            cl.target = arm_obj; cl.subtarget = cname
-            cl.owner_space = 'WORLD'; cl.target_space = 'WORLD'
-            cr = sb.constraints.new(type='COPY_ROTATION')
-            cr.name = "BoneBridge_COPY_ROTATION"
-            cr.target = arm_obj; cr.subtarget = cname
-            cr.owner_space = 'WORLD'; cr.target_space = 'WORLD'
+    for sb in selected_bones:
+        cname = rp_ctrl_name(sb.name)
+        for c in [c for c in sb.constraints if "BoneBridge" in c.name]:
+            sb.constraints.remove(c)
+        cl = sb.constraints.new(type='COPY_LOCATION')
+        cl.name = "BoneBridge_COPY_LOCATION"
+        cl.target = arm_obj; cl.subtarget = cname
+        cl.owner_space = 'WORLD'; cl.target_space = 'WORLD'
+        cr = sb.constraints.new(type='COPY_ROTATION')
+        cr.name = "BoneBridge_COPY_ROTATION"
+        cr.target = arm_obj; cr.subtarget = cname
+        cr.owner_space = 'WORLD'; cr.target_space = 'WORLD'
 
     finale(source_obj, arm_obj, ctrl_names)
-    mode_label = "Global reParent" if global_mode else "reParent"
-    print(f"✅ {mode_label}: {len(selected_bones)} костей")
+    print(f"✅ reParent: {len(selected_bones)} костей")
+
+
+def rp_run_global(source_obj, selected_bones):
+    """Global mode: BB_ gets Copy Location from source. Source gets only Copy Rotation from BB_."""
+    scene = bpy.context.scene
+    start = scene.frame_start
+    end   = scene.frame_end
+
+    ensure_all_shapes()
+    arm_obj = get_or_create_ctrl_armature()
+
+    bone_matrices = {}
+    bone_rotmodes = {}
+    bone_lengths  = {}
+    for sb in selected_bones:
+        bone_matrices[sb.name] = (source_obj.matrix_world @ sb.matrix).copy()
+        bone_rotmodes[sb.name] = sb.rotation_mode
+        bone_lengths[sb.name]  = sb.length
+
+    # Edit Mode — create BB_ bones
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+    bpy.context.view_layer.objects.active = arm_obj
+    bpy.ops.object.mode_set(mode='EDIT')
+
+    arm_data = arm_obj.data
+    for sb in selected_bones:
+        name = rp_ctrl_name(sb.name)
+        if name in arm_data.edit_bones:
+            arm_data.edit_bones.remove(arm_data.edit_bones[name])
+        eb = arm_data.edit_bones.new(name)
+        eb.head       = (0.0, 0.0, 0.0)
+        eb.tail       = (0.0, bone_lengths[sb.name], 0.0)
+        eb.use_deform = False
+        eb.parent     = None
+
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    # Pose Mode — set matrix + Child Of + Set Inverse
+    bpy.context.view_layer.objects.active = arm_obj
+    bpy.ops.object.mode_set(mode='POSE')
+    bpy.context.view_layer.update()
+
+    arm_imat = arm_obj.matrix_world.inverted()
+
+    for sb in selected_bones:
+        cname = rp_ctrl_name(sb.name)
+        pb = arm_obj.pose.bones[cname]
+        pb.rotation_mode          = bone_rotmodes[sb.name]
+        pb.custom_shape           = get_or_create_shape_axes()
+        pb.custom_shape_scale_xyz = (1.25, 1.25, 1.25)
+        color_green(pb)
+
+        pb.matrix = arm_imat @ bone_matrices[sb.name]
+        bpy.context.view_layer.update()
+
+        for c in [c for c in list(pb.constraints) if "BoneBridge" in c.name]:
+            pb.constraints.remove(c)
+        childof = pb.constraints.new(type='CHILD_OF')
+        childof.name      = "BoneBridge_CHILD_OF"
+        childof.target    = source_obj
+        childof.subtarget = sb.name
+        bpy.context.view_layer.update()
+
+        for p in arm_obj.pose.bones:
+            p.select = False
+        arm_obj.data.bones.active = arm_obj.data.bones[cname]
+        pb.select = True
+        bpy.ops.constraint.childof_set_inverse(constraint=childof.name, owner='BONE')
+
+    # Bake
+    ctrl_names = [rp_ctrl_name(sb.name) for sb in selected_bones]
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+    bpy.context.view_layer.objects.active = arm_obj
+    bpy.ops.object.mode_set(mode='POSE')
+    for pb in arm_obj.pose.bones:
+        pb.select = False
+    arm_obj.data.bones.active = None
+    for cname in ctrl_names:
+        arm_obj.pose.bones[cname].select = True
+        arm_obj.data.bones.active = arm_obj.data.bones[cname]
+
+    if not arm_obj.animation_data:
+        arm_obj.animation_data_create()
+    if not arm_obj.animation_data.action:
+        arm_obj.animation_data.action = bpy.data.actions.new(name=f"{arm_obj.name}_Action")
+
+    bpy.ops.nla.bake(
+        frame_start=start, frame_end=end,
+        only_selected=True, visual_keying=True,
+        clear_constraints=False, use_current_action=True,
+        bake_types={'POSE'}
+    )
+    bpy.context.view_layer.update()
+    set_interpolation(arm_obj)
+
+    # Remove Child Of
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for cname in ctrl_names:
+        pb = arm_obj.pose.bones[cname]
+        for c in [c for c in list(pb.constraints) if c.name == "BoneBridge_CHILD_OF"]:
+            pb.constraints.remove(c)
+
+    # Tag created bones with source info
+    for sb in selected_bones:
+        tag_bone(arm_obj, rp_ctrl_name(sb.name), source_obj, sb.name)
+
+    # Global mode constraints:
+    # BB_ ctrl bone  → Copy Location from source
+    # source bone    → Copy Rotation from BB_ only
+    bpy.context.view_layer.objects.active = arm_obj
+    bpy.ops.object.mode_set(mode='POSE')
+    for sb in selected_bones:
+        cname = rp_ctrl_name(sb.name)
+        pb = arm_obj.pose.bones[cname]
+        for c in [c for c in list(pb.constraints) if "BoneBridge" in c.name]:
+            pb.constraints.remove(c)
+        cl = pb.constraints.new(type='COPY_LOCATION')
+        cl.name         = "BoneBridge_COPY_LOCATION"
+        cl.target       = source_obj
+        cl.subtarget    = sb.name
+        cl.owner_space  = 'WORLD'
+        cl.target_space = 'WORLD'
+
+    for o in bpy.context.selected_objects:
+        o.select_set(False)
+    bpy.context.view_layer.objects.active = source_obj
+    source_obj.select_set(True)
+    bpy.ops.object.mode_set(mode='POSE')
+
+    for sb in selected_bones:
+        cname = rp_ctrl_name(sb.name)
+        for c in [c for c in sb.constraints if "BoneBridge" in c.name]:
+            sb.constraints.remove(c)
+        cr = sb.constraints.new(type='COPY_ROTATION')
+        cr.name         = "BoneBridge_COPY_ROTATION"
+        cr.target       = arm_obj
+        cr.subtarget    = cname
+        cr.owner_space  = 'WORLD'
+        cr.target_space = 'WORLD'
+
+    finale(source_obj, arm_obj, ctrl_names)
+    print(f"✅ Global reParent: {len(selected_bones)} костей")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -535,7 +635,7 @@ def rp_run(source_obj, selected_bones, global_mode=False):
 #          AIM_LOC остаётся свободной после GO (блокировки не восстанавливаются).
 # ══════════════════════════════════════════════════════════════════════════════
 
-def aim_loc_name(src): return f"{AIM_LOC_PREFIX}{src}"
+def aim_loc_name(src): return f"AIM_LOC_{src}"
 
 
 def aim_step1(source_obj, selected_bones):
@@ -1137,7 +1237,7 @@ RCPIVOT_PREFIX = "RCPIVOT_"
 RC_PREFIX      = "RC_"
 
 
-def rc_parent_name(parent): return f"{RC_PARENT_PREFIX}{parent}"
+def rc_parent_name(parent): return f"RC_PARENT_{parent}"
 def rc_ctrl_name(child):    return f"{RC_PREFIX}{child}"
 
 
@@ -1292,10 +1392,10 @@ def rc_run(source_obj, parent_bone, child_bone):
 
 
 # ── reConstrain + Manual Pivot name helpers ───────────────────────────────────
-def rc_pivot_name(child):   return f"{PIVOT_PREFIX}{child}"
-def cm_parent_name(parent): return f"{CM_PARENT_PREFIX}{parent}"
-def cm_ctrl_name(child):    return f"{CM_CTRL_PREFIX}{child}"
-def cm_child_name(child):   return f"{CM_CHILD_PREFIX}{child}"
+def rc_pivot_name(child):   return f"PIVOT_{child}"
+def cm_parent_name(parent): return f"CM_PARENT_{parent}"
+def cm_ctrl_name(child):    return f"CM_CONTROL_{child}"
+def cm_child_name(child):   return f"CM_CHILD_{child}"
 
 
 def rc_step1(source_obj, parent_bone, child_bone):
@@ -2104,7 +2204,7 @@ class BB_OT_reparent(bpy.types.Operator):
         elif use_mp:
             mp_step1(context.active_object, list(context.selected_pose_bones))
         elif use_global:
-            rp_run(context.active_object, list(context.selected_pose_bones), global_mode=True)
+            rp_run_global(context.active_object, list(context.selected_pose_bones))
         else:
             rp_run(context.active_object, list(context.selected_pose_bones))
         return {'FINISHED'}
@@ -2340,13 +2440,25 @@ class BB_OT_flip_animation(bpy.types.Operator):
 
         bpy.ops.pose.select_mirror(only_active=False, extend=False)
         mirror = get_selected_bone_names()
-        if not mirror:
-            self.report({'WARNING'}, "No mirror bones found")
+
+        # Если select_mirror вернул те же кости — зеркальных костей нет
+        if not mirror or set(mirror) == set(original):
+            # Восстанавливаем исходное выделение
+            select_bones_by_name(obj, original)
+            self.report({'WARNING'}, "No mirror bones found — кости без зеркального аналога")
+            return {'CANCELLED'}
+
+        # Убираем из mirror кости которые совпадают с original
+        # (select_mirror может вернуть микс если только часть костей имеет зеркало)
+        mirror_only = [b for b in mirror if b not in original]
+        if not mirror_only:
+            select_bones_by_name(obj, original)
+            self.report({'WARNING'}, "No mirror bones found — кости без зеркального аналога")
             return {'CANCELLED'}
 
         bpy.ops.pose.select_mirror(only_active=False, extend=False)
 
-        ok, msg = run_flip_animation(obj, original, mirror)
+        ok, msg = run_flip_animation(obj, original, mirror_only)
         context.scene.frame_set(saved_frame)
 
         if ok:

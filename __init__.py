@@ -1779,21 +1779,31 @@ def on_rc_toggle(self, context):
 def register_props():
     bpy.types.Scene.bb_mode_aim = bpy.props.BoolProperty(
         name="Aim",
+        description="Режим Aim: создать локатор-цель, кость будет смотреть на него через Damped Track",
         default=False,
         update=on_aim_toggle,
     )
     bpy.types.Scene.bb_mode_manual_pivot = bpy.props.BoolProperty(
         name="Manual Pivot",
+        description=(
+            "Режим Manual Pivot: вручную задать точку вращения для кости. "
+            "Совместим с reConstrain"
+        ),
         default=False,
         update=on_mp_toggle,
     )
     bpy.types.Scene.bb_mode_global = bpy.props.BoolProperty(
         name="Global",
+        description="Режим Global: контрол следует за костью по локации, кость берёт только вращение от контрола",
         default=False,
         update=on_global_toggle,
     )
     bpy.types.Scene.bb_mode_reconstrain = bpy.props.BoolProperty(
         name="reConstrain",
+        description=(
+            "Режим reConstrain: привязать active кость к non-active с сохранением анимации. "
+            "Выделите ровно 2 кости. Совместим с Manual Pivot"
+        ),
         default=False,
         update=on_rc_toggle,
     )
@@ -2146,7 +2156,7 @@ def _remove_ctrl_arm_if_empty(ctrl_arm):
 class BB_OT_bake_and_delete(bpy.types.Operator):
     bl_idname      = "bb.bake_and_delete"
     bl_label       = "Bake and Delete"
-    bl_description = "Запечь анимацию source-костей и удалить BoneBridge контролы"
+    bl_description = "Запечь анимацию в source-кости и удалить контролы BoneBridge"
     bl_options     = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -2159,8 +2169,12 @@ class BB_OT_bake_and_delete(bpy.types.Operator):
 
 
 class BB_OT_reparent(bpy.types.Operator):
-    bl_idname  = "bb.reparent"
-    bl_label   = "reParent"
+    bl_idname      = "bb.reparent"
+    bl_label       = "reParent"
+    bl_description = (
+        "Создать контрол-кость и перенести на неё анимацию выделенных костей. "
+        "Режим зависит от активных галочек: Aim, Manual Pivot, Global, reConstrain"
+    )
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -2211,9 +2225,10 @@ class BB_OT_reparent(bpy.types.Operator):
 
 
 class BB_OT_go(bpy.types.Operator):
-    bl_idname  = "bb.go"
-    bl_label   = "GO"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_idname      = "bb.go"
+    bl_label       = "GO"
+    bl_description = "Завершить текущую сессию: запечь и применить настроенные контролы"
+    bl_options     = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
@@ -2230,9 +2245,10 @@ class BB_OT_go(bpy.types.Operator):
 
 
 class BB_OT_cancel(bpy.types.Operator):
-    bl_idname  = "bb.cancel"
-    bl_label   = "Cancel"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_idname      = "bb.cancel"
+    bl_label       = "Cancel"
+    bl_description = "Отменить текущую сессию и удалить созданные временные кости"
+    bl_options     = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
@@ -2417,8 +2433,8 @@ class BB_OT_flip_animation(bpy.types.Operator):
     bl_idname      = "bb_util.flip_animation"
     bl_label       = "Flip Anim to Mirror"
     bl_description = (
-        "Зеркалит анимацию на противоположные кости со сдвигом на пол-цикла. "
-        "Выдели исходные кости в Pose Mode и запусти"
+        "Зеркалить анимацию на противоположные кости со сдвигом на пол-цикла. "
+        "Работает только с костями у которых есть зеркальный аналог"
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -2471,9 +2487,10 @@ class BB_OT_flip_animation(bpy.types.Operator):
 
 
 class BB_OT_set_playback_speed(bpy.types.Operator):
-    bl_idname  = "bb_util.set_playback_speed"
-    bl_label   = "Set Playback Speed"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_idname      = "bb_util.set_playback_speed"
+    bl_label       = "Set Playback Speed"
+    bl_description = "Изменить скорость воспроизведения через frame_map. При возврате на 1x восстанавливает исходный frame_end"
+    bl_options     = {'REGISTER', 'UNDO'}
 
     speed: bpy.props.FloatProperty(name="Speed", default=1.0)
 

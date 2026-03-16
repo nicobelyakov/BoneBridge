@@ -1,3 +1,5 @@
+# Inspired by RePARENT PRO for Maya by Dmitrii Kolpakov
+
 bl_info = {
     "name":        "Bone Bridge",
     "author":      "BoneBridge",
@@ -2079,6 +2081,12 @@ def bake_and_delete_run(context):
             if bname in arm_data.edit_bones:
                 arm_data.edit_bones.remove(arm_data.edit_bones[bname])
         bpy.ops.object.mode_set(mode='OBJECT')
+
+        # Удаляем осиротевшие fcurves удалённых костей из action ctrl_arm
+        surviving_ctrl = get_ctrl_arm()
+        if surviving_ctrl and surviving_ctrl.animation_data and surviving_ctrl.animation_data.action:
+            removed_names = set(all_ctrl_to_remove)
+            remove_fcurves_for_bones(surviving_ctrl.animation_data.action, removed_names)
 
     _remove_ctrl_arm_if_empty(ctrl_arm)
 

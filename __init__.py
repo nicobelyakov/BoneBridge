@@ -2265,16 +2265,12 @@ class BB_PT_panel(bpy.types.Panel):
         is_glob = scene.bb_mode_global
         is_rc   = scene.bb_mode_reconstrain
 
-        # ── Строка 1: Aim | Manual Pivot | Global ─────────────────────────────
+        # ── Строка 1: Aim | Global ────────────────────────────────────────────
         row = col.row(align=True)
 
         sub = row.row(align=True)
         sub.enabled = not any_active and not (is_mp or is_glob or is_rc)
         sub.prop(scene, "bb_mode_aim")
-
-        sub = row.row(align=True)
-        sub.enabled = not any_active and not (is_aim or is_glob)
-        sub.prop(scene, "bb_mode_manual_pivot")
 
         sub = row.row(align=True)
         sub.enabled = not any_active and not (is_aim or is_mp or is_rc)
@@ -2285,6 +2281,12 @@ class BB_PT_panel(bpy.types.Panel):
         sub = row2.row(align=True)
         sub.enabled = not any_active and not (is_aim or is_glob)
         sub.prop(scene, "bb_mode_reconstrain")
+
+        # ── Строка 3: Manual Pivot (одна, чтобы название читалось полностью) ──
+        row3 = col.row(align=True)
+        sub = row3.row(align=True)
+        sub.enabled = not any_active and not (is_aim or is_glob)
+        sub.prop(scene, "bb_mode_manual_pivot")
 
         col.separator(factor=0.5)
 

@@ -1356,9 +1356,13 @@ def rc_run(source_obj, parent_bone, child_bone):
         pb_rc.constraints.remove(c)
 
     # Тегируем — RC_PARENT_ помечаем флагом bb_skip_bake
+    # bb_group связывает все кости одной операции для совместного удаления
+    group_id = f"{source_obj.name}:{child_name}"
     tag_bone(arm_obj, pname, source_obj, parent_name)
     arm_obj.pose.bones[pname]["bb_skip_bake"] = True
+    arm_obj.pose.bones[pname]["bb_group"]     = group_id
     tag_bone(arm_obj, cname, source_obj, child_name)
+    arm_obj.pose.bones[cname]["bb_group"] = group_id
 
     # ── Copy Loc+Rot на active (child) → RC_<child> ───────────────────────────
     for o in bpy.context.selected_objects:
@@ -1682,11 +1686,15 @@ def rc_step2_go():
     # ── Шаг 7: тегируем кости ────────────────────────────────────────────────
     bpy.context.view_layer.objects.active = arm_obj
     bpy.ops.object.mode_set(mode='POSE')
+    group_id = f"{source_obj.name}:{child_name}"
     tag_bone(arm_obj, chname, source_obj, child_name)
+    arm_obj.pose.bones[chname]["bb_group"] = group_id
     tag_bone(arm_obj, pname,  source_obj, parent_name)
-    tag_bone(arm_obj, cname,  source_obj, child_name)
     arm_obj.pose.bones[pname]["bb_skip_bake"] = True
+    arm_obj.pose.bones[pname]["bb_group"]     = group_id
+    tag_bone(arm_obj, cname,  source_obj, child_name)
     arm_obj.pose.bones[cname]["bb_skip_bake"] = True
+    arm_obj.pose.bones[cname]["bb_group"]     = group_id
 
     # ── Шаг 8: Copy Loc+Rot на active → CM_CHILD_ ────────────────────────────
     for o in bpy.context.selected_objects:
@@ -1855,11 +1863,15 @@ def resolve_target_bones(context):
         for pb in selected_pose_bones:
             selected_by_obj.setdefault(active_obj.name, []).append(pb.name)
 
+    # Для не-активных арматур читаем выделение через data.bones коллекцию
     for obj in context.selected_objects:
         if obj.type == 'ARMATURE' and obj != active_obj:
             for pb in obj.pose.bones:
-                if pb.select:
-                    selected_by_obj.setdefault(obj.name, []).append(pb.name)
+                try:
+                    if obj.data.bones[pb.name].select:
+                        selected_by_obj.setdefault(obj.name, []).append(pb.name)
+                except (KeyError, AttributeError):
+                    pass
 
     if not selected_by_obj or not ctrl_arm:
         return None
@@ -1940,6 +1952,11 @@ def bake_and_delete_run(context):
                 if selected:
                     prev_pose_bones[obj.name] = selected
 
+    # Читаем выделение ДО переключения в Object Mode —
+    # после mode_set selected_pose_bones будет пустым
+    targets      = resolve_target_bones(context)
+    was_relevant = targets is not None
+
     try:
         bpy.ops.object.mode_set(mode='OBJECT')
     except Exception:
@@ -1950,9 +1967,6 @@ def bake_and_delete_run(context):
         _restore_state(prev_active_name, prev_selected_names, prev_mode, prev_pose_bones)
         print("✅ Bake and Delete: BB объекты удалены (ctrl_arm не найден).")
         return
-
-    targets = resolve_target_bones(context)
-    was_relevant = targets is not None
 
     if not targets:
         all_tagged = collect_tagged_bones(ctrl_arm)
@@ -2026,14 +2040,33 @@ def bake_and_delete_run(context):
     for target in targets:
         all_ctrl_to_remove.extend(target["ctrl_bones"])
 
-    # Дополнительно удаляем кости с bb_skip_bake (CM_PARENT_, RC_ и т.п.),
-    # которые принадлежат тем же source арматурам что и удаляемые ctrl кости
+    # Дополнительно удаляем кости с bb_skip_bake связанные с удаляемыми.
+    # Используем bb_group для точного сопоставления — убираем только кости
+    # из тех же групп что и удаляемые ctrl кости, не трогая чужие.
     if ctrl_arm:
-        src_arms_being_removed = {target["source_obj"].name for target in targets}
+        # Собираем группы удаляемых костей
+        groups_being_removed = set()
+        for bname in all_ctrl_to_remove:
+            pb = ctrl_arm.pose.bones.get(bname)
+            if pb:
+                grp = pb.get("bb_group")
+                if grp:
+                    groups_being_removed.add(grp)
+        # Также по парам (арматура, кость) для костей без bb_group
+        src_pairs_being_removed = set()
+        for target in targets:
+            for bone in target["source_bones"]:
+                src_pairs_being_removed.add((target["source_obj"].name, bone))
+        # Добавляем skip_bake кости из тех же групп или пар
         for pb in ctrl_arm.pose.bones:
-            if (pb.get("bb_skip_bake") and
-                    pb.get("bb_source_armature") in src_arms_being_removed and
-                    pb.name not in all_ctrl_to_remove):
+            if not pb.get("bb_skip_bake"):
+                continue
+            if pb.name in all_ctrl_to_remove:
+                continue
+            grp = pb.get("bb_group")
+            if grp and grp in groups_being_removed:
+                all_ctrl_to_remove.append(pb.name)
+            elif not grp and (pb.get("bb_source_armature"), pb.get("bb_source_bone")) in src_pairs_being_removed:
                 all_ctrl_to_remove.append(pb.name)
 
     if all_ctrl_to_remove:
@@ -2053,8 +2086,9 @@ def bake_and_delete_run(context):
         for o in bpy.context.selected_objects:
             o.select_set(False)
 
+        # Выделяем source арматуры с запечёнными костями
         first = True
-        for src_arm_name, bone_names in baked_sources.items():
+        for src_arm_name in baked_sources:
             src_obj = bpy.data.objects.get(src_arm_name)
             if not src_obj:
                 continue
@@ -2063,9 +2097,15 @@ def bake_and_delete_run(context):
                 bpy.context.view_layer.objects.active = src_obj
                 first = False
 
+        # Также выделяем ctrl_arm если она ещё существует
+        surviving_ctrl = get_ctrl_arm()
+        if surviving_ctrl:
+            surviving_ctrl.select_set(True)
+
         bpy.ops.object.mode_set(mode='POSE')
         bpy.context.view_layer.update()
 
+        # Выделяем запечённые кости в source арматурах
         for src_arm_name, bone_names in baked_sources.items():
             src_obj = bpy.data.objects.get(src_arm_name)
             if not src_obj:
@@ -2077,6 +2117,13 @@ def bake_and_delete_run(context):
                 if bname in src_obj.pose.bones:
                     src_obj.pose.bones[bname].select = True
                     src_obj.data.bones.active = src_obj.data.bones[bname]
+
+        # Снимаем выделение костей в ctrl_arm (она просто присутствует в сцене)
+        if surviving_ctrl and surviving_ctrl.pose:
+            for pb in surviving_ctrl.pose.bones:
+                pb.select = False
+            surviving_ctrl.data.bones.active = None
+
     else:
         _restore_state(prev_active_name, prev_selected_names, prev_mode, prev_pose_bones)
 

@@ -25,12 +25,26 @@ CTRL_ARM_NAME  = "BoneBridge_Armature_Control"
 # Session keys
 SCENE_KEY_AIM  = "bb_aim_session"
 SCENE_KEY_MP   = "bb_manual_pivot_session"
+SCENE_KEY_RC   = "bb_reconstrain_session"
 
-# Prefixes
-MP_PREFIX   = "MPIVOT_"
-MPC_PREFIX  = "MPIVOT_CHILD_"
+# Bone name prefixes
+MP_PREFIX        = "MPIVOT_"
+MPC_PREFIX       = "MPIVOT_CHILD_"
+BB_PREFIX        = "BB_"
+AIM_LOC_PREFIX   = "AIM_LOC_"
+RC_PREFIX        = "RC_"
+RC_PARENT_PREFIX = "RC_PARENT_"
+CM_PARENT_PREFIX = "CM_PARENT_"
+CM_CTRL_PREFIX   = "CM_CONTROL_"
+CM_CHILD_PREFIX  = "CM_CHILD_"
+PIVOT_PREFIX     = "PIVOT_"
 
 TRACK_AXIS  = 'TRACK_Y'
+
+# Bone color palettes  (normal, select, active)
+COLOR_GREEN  = ((0x80/255, 0xFF/255, 0x9E/255), (0xB3/255, 0xFF/255, 0xC6/255), (0xEA/255, 0xFF/255, 0xF0/255))
+COLOR_ORANGE = ((0xFF/255, 0xA0/255, 0x30/255), (0xFF/255, 0xC8/255, 0x70/255), (0xFF/255, 0xE8/255, 0xB0/255))
+COLOR_BLUE   = ((0x60/255, 0xC8/255, 0xFF/255), (0x90/255, 0xDA/255, 0xFF/255), (0xC0/255, 0xEE/255, 0xFF/255))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -158,23 +172,23 @@ def ensure_all_shapes():
 
 def color_green(pb):
     pb.color.palette = 'CUSTOM'
-    pb.color.custom.normal = (0x80/255, 0xFF/255, 0x9E/255)
-    pb.color.custom.select = (0xB3/255, 0xFF/255, 0xC6/255)
-    pb.color.custom.active = (0xEA/255, 0xFF/255, 0xF0/255)
+    pb.color.custom.normal = COLOR_GREEN[0]
+    pb.color.custom.select = COLOR_GREEN[1]
+    pb.color.custom.active = COLOR_GREEN[2]
 
 
 def color_orange(pb):
     pb.color.palette = 'CUSTOM'
-    pb.color.custom.normal = (0xFF/255, 0xA0/255, 0x30/255)
-    pb.color.custom.select = (0xFF/255, 0xC8/255, 0x70/255)
-    pb.color.custom.active = (0xFF/255, 0xE8/255, 0xB0/255)
+    pb.color.custom.normal = COLOR_ORANGE[0]
+    pb.color.custom.select = COLOR_ORANGE[1]
+    pb.color.custom.active = COLOR_ORANGE[2]
 
 
 def color_blue(pb):
     pb.color.palette = 'CUSTOM'
-    pb.color.custom.normal = (0x60/255, 0xC8/255, 0xFF/255)
-    pb.color.custom.select = (0x90/255, 0xDA/255, 0xFF/255)
-    pb.color.custom.active = (0xC0/255, 0xEE/255, 0xFF/255)
+    pb.color.custom.normal = COLOR_BLUE[0]
+    pb.color.custom.select = COLOR_BLUE[1]
+    pb.color.custom.active = COLOR_BLUE[2]
 
 
 # Shared ctrl armature
@@ -285,6 +299,12 @@ def tag_bone(arm_obj, bone_name, source_obj, source_bone_name):
         pb["bb_source_bone"]     = source_bone_name
 
 
+def remove_bb_constraints(pb):
+    """Удалить все констрейнты с именем начинающимся на 'BoneBridge'."""
+    for c in [c for c in list(pb.constraints) if c.name.startswith("BoneBridge")]:
+        pb.constraints.remove(c)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  AIM_LOC lock helpers
 # ══════════════════════════════════════════════════════════════════════════════
@@ -341,7 +361,7 @@ def aim_unlock_all(pb):
 #  MODE 1 — reParent
 # ══════════════════════════════════════════════════════════════════════════════
 
-def rp_ctrl_name(src): return f"BB_{src}"
+def rp_ctrl_name(src): return f"{BB_PREFIX}{src}"
 
 
 def rp_run(source_obj, selected_bones):
@@ -399,8 +419,7 @@ def rp_run(source_obj, selected_bones):
         pb.matrix = arm_imat @ bone_matrices[sb.name]
         bpy.context.view_layer.update()
 
-        for c in [c for c in list(pb.constraints) if "BoneBridge" in c.name]:
-            pb.constraints.remove(c)
+        remove_bb_constraints(pb)
         childof = pb.constraints.new(type='CHILD_OF')
         childof.name      = "BoneBridge_CHILD_OF"
         childof.target    = source_obj
@@ -461,8 +480,7 @@ def rp_run(source_obj, selected_bones):
 
     for sb in selected_bones:
         cname = rp_ctrl_name(sb.name)
-        for c in [c for c in sb.constraints if "BoneBridge" in c.name]:
-            sb.constraints.remove(c)
+        remove_bb_constraints(sb)
         cl = sb.constraints.new(type='COPY_LOCATION')
         cl.name = "BoneBridge_COPY_LOCATION"
         cl.target = arm_obj; cl.subtarget = cname
@@ -531,8 +549,7 @@ def rp_run_global(source_obj, selected_bones):
         pb.matrix = arm_imat @ bone_matrices[sb.name]
         bpy.context.view_layer.update()
 
-        for c in [c for c in list(pb.constraints) if "BoneBridge" in c.name]:
-            pb.constraints.remove(c)
+        remove_bb_constraints(pb)
         childof = pb.constraints.new(type='CHILD_OF')
         childof.name      = "BoneBridge_CHILD_OF"
         childof.target    = source_obj
@@ -592,8 +609,7 @@ def rp_run_global(source_obj, selected_bones):
     for sb in selected_bones:
         cname = rp_ctrl_name(sb.name)
         pb = arm_obj.pose.bones[cname]
-        for c in [c for c in list(pb.constraints) if "BoneBridge" in c.name]:
-            pb.constraints.remove(c)
+        remove_bb_constraints(pb)
         cl = pb.constraints.new(type='COPY_LOCATION')
         cl.name         = "BoneBridge_COPY_LOCATION"
         cl.target       = source_obj
@@ -609,8 +625,7 @@ def rp_run_global(source_obj, selected_bones):
 
     for sb in selected_bones:
         cname = rp_ctrl_name(sb.name)
-        for c in [c for c in sb.constraints if "BoneBridge" in c.name]:
-            sb.constraints.remove(c)
+        remove_bb_constraints(sb)
         cr = sb.constraints.new(type='COPY_ROTATION')
         cr.name         = "BoneBridge_COPY_ROTATION"
         cr.target       = arm_obj
@@ -635,7 +650,7 @@ def rp_run_global(source_obj, selected_bones):
 #          AIM_LOC остаётся свободной после GO (блокировки не восстанавливаются).
 # ══════════════════════════════════════════════════════════════════════════════
 
-def aim_loc_name(src): return f"AIM_LOC_{src}"
+def aim_loc_name(src): return f"{AIM_LOC_PREFIX}{src}"
 
 
 def aim_step1(source_obj, selected_bones):
@@ -822,31 +837,11 @@ def aim_step2_go():
     # ── Шаг 4б: удаляем fcurves вращения/scale AIM_LOC_, обнуляем pose ────────
     lnames = {aim_loc_name(bd["name"]) for bd in bone_data}
     if arm_obj.animation_data and arm_obj.animation_data.action:
-        action = arm_obj.animation_data.action
-        # Новый API (Blender 4.x — layered actions)
-        if hasattr(action, 'layers'):
-            for layer in action.layers:
-                for strip in layer.strips:
-                    if hasattr(strip, 'channelbags'):
-                        for cb in strip.channelbags:
-                            to_remove = [
-                                fc for fc in cb.fcurves
-                                if any(f'"{ln}"' in fc.data_path or f"'{ln}'" in fc.data_path
-                                       for ln in lnames)
-                                and any(k in fc.data_path for k in ("rotation", "scale"))
-                            ]
-                            for fc in to_remove:
-                                cb.fcurves.remove(fc)
-        # Старый API
-        elif hasattr(action, 'fcurves'):
-            to_remove = [
-                fc for fc in action.fcurves
-                if any(f'"{ln}"' in fc.data_path or f"'{ln}'" in fc.data_path
-                       for ln in lnames)
-                and any(k in fc.data_path for k in ("rotation", "scale"))
-            ]
-            for fc in to_remove:
-                action.fcurves.remove(fc)
+        remove_fcurves_for_bones(
+            arm_obj.animation_data.action,
+            lnames,
+            path_filter=("rotation", "scale"),
+        )
 
     # Обнуляем rotation/scale в pose напрямую
     bpy.context.view_layer.objects.active = arm_obj
@@ -879,8 +874,7 @@ def aim_step2_go():
     for bd in bone_data:
         lname = aim_loc_name(bd["name"])
         sb    = source_obj.pose.bones[bd["name"]]
-        for c in [c for c in sb.constraints if "BoneBridge" in c.name]:
-            sb.constraints.remove(c)
+        remove_bb_constraints(sb)
         dt            = sb.constraints.new(type='DAMPED_TRACK')
         dt.name       = "BoneBridge_DAMPED_TRACK"
         dt.target     = arm_obj
@@ -1175,8 +1169,7 @@ def mp_step2_go():
     for bd in bone_data:
         cname = mp_child_name(bd["name"])
         sb    = source_obj.pose.bones[bd["name"]]
-        for c in [c for c in sb.constraints if "BoneBridge" in c.name]:
-            sb.constraints.remove(c)
+        remove_bb_constraints(sb)
         cl = sb.constraints.new(type='COPY_LOCATION')
         cl.name = "BoneBridge_COPY_LOCATION"
         cl.target = arm_obj; cl.subtarget = cname
@@ -1232,12 +1225,11 @@ def mp_cancel():
 #           затем аналогично базовому.
 # ══════════════════════════════════════════════════════════════════════════════
 
-SCENE_KEY_RC   = "bb_reconstrain_session"
-RCPIVOT_PREFIX = "RCPIVOT_"
-RC_PREFIX      = "RC_"
 
 
-def rc_parent_name(parent): return f"RC_PARENT_{parent}"
+
+
+def rc_parent_name(parent): return f"{RC_PARENT_PREFIX}{parent}"
 def rc_ctrl_name(child):    return f"{RC_PREFIX}{child}"
 
 
@@ -1376,8 +1368,7 @@ def rc_run(source_obj, parent_bone, child_bone):
     bpy.ops.object.mode_set(mode='POSE')
 
     cb = source_obj.pose.bones[child_name]
-    for c in [c for c in cb.constraints if "BoneBridge" in c.name]:
-        cb.constraints.remove(c)
+    remove_bb_constraints(cb)
     cl = cb.constraints.new(type='COPY_LOCATION')
     cl.name         = "BoneBridge_COPY_LOCATION"
     cl.target       = arm_obj; cl.subtarget = cname
@@ -1392,10 +1383,10 @@ def rc_run(source_obj, parent_bone, child_bone):
 
 
 # ── reConstrain + Manual Pivot name helpers ───────────────────────────────────
-def rc_pivot_name(child):   return f"PIVOT_{child}"
-def cm_parent_name(parent): return f"CM_PARENT_{parent}"
-def cm_ctrl_name(child):    return f"CM_CONTROL_{child}"
-def cm_child_name(child):   return f"CM_CHILD_{child}"
+def rc_pivot_name(child):   return f"{PIVOT_PREFIX}{child}"
+def cm_parent_name(parent): return f"{CM_PARENT_PREFIX}{parent}"
+def cm_ctrl_name(child):    return f"{CM_CTRL_PREFIX}{child}"
+def cm_child_name(child):   return f"{CM_CHILD_PREFIX}{child}"
 
 
 def rc_step1(source_obj, parent_bone, child_bone):
@@ -1705,8 +1696,7 @@ def rc_step2_go():
     bpy.ops.object.mode_set(mode='POSE')
 
     cb = source_obj.pose.bones[child_name]
-    for c in [c for c in cb.constraints if "BoneBridge" in c.name]:
-        cb.constraints.remove(c)
+    remove_bb_constraints(cb)
     cl = cb.constraints.new(type='COPY_LOCATION')
     cl.name         = "BoneBridge_COPY_LOCATION"
     cl.target       = arm_obj; cl.subtarget = chname
@@ -1779,31 +1769,21 @@ def on_rc_toggle(self, context):
 def register_props():
     bpy.types.Scene.bb_mode_aim = bpy.props.BoolProperty(
         name="Aim",
-        description="Режим Aim: создать локатор-цель, кость будет смотреть на него через Damped Track",
         default=False,
         update=on_aim_toggle,
     )
     bpy.types.Scene.bb_mode_manual_pivot = bpy.props.BoolProperty(
         name="Manual Pivot",
-        description=(
-            "Режим Manual Pivot: вручную задать точку вращения для кости. "
-            "Совместим с reConstrain"
-        ),
         default=False,
         update=on_mp_toggle,
     )
     bpy.types.Scene.bb_mode_global = bpy.props.BoolProperty(
         name="Global",
-        description="Режим Global: контрол следует за костью по локации, кость берёт только вращение от контрола",
         default=False,
         update=on_global_toggle,
     )
     bpy.types.Scene.bb_mode_reconstrain = bpy.props.BoolProperty(
         name="reConstrain",
-        description=(
-            "Режим reConstrain: привязать active кость к non-active с сохранением анимации. "
-            "Выделите ровно 2 кости. Совместим с Manual Pivot"
-        ),
         default=False,
         update=on_rc_toggle,
     )
@@ -2156,7 +2136,7 @@ def _remove_ctrl_arm_if_empty(ctrl_arm):
 class BB_OT_bake_and_delete(bpy.types.Operator):
     bl_idname      = "bb.bake_and_delete"
     bl_label       = "Bake and Delete"
-    bl_description = "Запечь анимацию в source-кости и удалить контролы BoneBridge"
+    bl_description = "Запечь анимацию source-костей и удалить BoneBridge контролы"
     bl_options     = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -2169,12 +2149,8 @@ class BB_OT_bake_and_delete(bpy.types.Operator):
 
 
 class BB_OT_reparent(bpy.types.Operator):
-    bl_idname      = "bb.reparent"
-    bl_label       = "reParent"
-    bl_description = (
-        "Создать контрол-кость и перенести на неё анимацию выделенных костей. "
-        "Режим зависит от активных галочек: Aim, Manual Pivot, Global, reConstrain"
-    )
+    bl_idname  = "bb.reparent"
+    bl_label   = "reParent"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -2225,10 +2201,9 @@ class BB_OT_reparent(bpy.types.Operator):
 
 
 class BB_OT_go(bpy.types.Operator):
-    bl_idname      = "bb.go"
-    bl_label       = "GO"
-    bl_description = "Завершить текущую сессию: запечь и применить настроенные контролы"
-    bl_options     = {'REGISTER', 'UNDO'}
+    bl_idname  = "bb.go"
+    bl_label   = "GO"
+    bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
@@ -2245,10 +2220,9 @@ class BB_OT_go(bpy.types.Operator):
 
 
 class BB_OT_cancel(bpy.types.Operator):
-    bl_idname      = "bb.cancel"
-    bl_label       = "Cancel"
-    bl_description = "Отменить текущую сессию и удалить созданные временные кости"
-    bl_options     = {'REGISTER', 'UNDO'}
+    bl_idname  = "bb.cancel"
+    bl_label   = "Cancel"
+    bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
@@ -2359,6 +2333,7 @@ def select_bones_by_name(obj, bone_names):
 
 
 def get_all_fcurves(action):
+    """Вернуть все FCurve из action независимо от версии API (layered / legacy)."""
     fcurves = []
     if hasattr(action, 'layers'):
         for layer in action.layers:
@@ -2369,6 +2344,35 @@ def get_all_fcurves(action):
     elif hasattr(action, 'fcurves'):
         fcurves.extend(action.fcurves)
     return fcurves
+
+
+def remove_fcurves_for_bones(action, bone_names, path_filter=None):
+    """Удалить FCurve для указанных костей.
+
+    bone_names  — множество/список имён костей.
+    path_filter — если задан, удаляются только каналы содержащие одно
+                  из этих слов в data_path (например ("rotation", "scale")).
+                  Если None — удаляются все каналы этих костей.
+    """
+    def matches(fc):
+        in_bone = any(f'"{n}"' in fc.data_path or f"'{n}'" in fc.data_path
+                      for n in bone_names)
+        if not in_bone:
+            return False
+        if path_filter:
+            return any(k in fc.data_path for k in path_filter)
+        return True
+
+    if hasattr(action, 'layers'):
+        for layer in action.layers:
+            for strip in layer.strips:
+                if hasattr(strip, 'channelbags'):
+                    for cb in strip.channelbags:
+                        for fc in [fc for fc in cb.fcurves if matches(fc)]:
+                            cb.fcurves.remove(fc)
+    elif hasattr(action, 'fcurves'):
+        for fc in [fc for fc in action.fcurves if matches(fc)]:
+            action.fcurves.remove(fc)
 
 
 def bone_in_path(bone_name, data_path):
@@ -2433,8 +2437,8 @@ class BB_OT_flip_animation(bpy.types.Operator):
     bl_idname      = "bb_util.flip_animation"
     bl_label       = "Flip Anim to Mirror"
     bl_description = (
-        "Зеркалить анимацию на противоположные кости со сдвигом на пол-цикла. "
-        "Работает только с костями у которых есть зеркальный аналог"
+        "Зеркалит анимацию на противоположные кости со сдвигом на пол-цикла. "
+        "Выдели исходные кости в Pose Mode и запусти"
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -2456,25 +2460,13 @@ class BB_OT_flip_animation(bpy.types.Operator):
 
         bpy.ops.pose.select_mirror(only_active=False, extend=False)
         mirror = get_selected_bone_names()
-
-        # Если select_mirror вернул те же кости — зеркальных костей нет
-        if not mirror or set(mirror) == set(original):
-            # Восстанавливаем исходное выделение
-            select_bones_by_name(obj, original)
-            self.report({'WARNING'}, "No mirror bones found — кости без зеркального аналога")
-            return {'CANCELLED'}
-
-        # Убираем из mirror кости которые совпадают с original
-        # (select_mirror может вернуть микс если только часть костей имеет зеркало)
-        mirror_only = [b for b in mirror if b not in original]
-        if not mirror_only:
-            select_bones_by_name(obj, original)
-            self.report({'WARNING'}, "No mirror bones found — кости без зеркального аналога")
+        if not mirror:
+            self.report({'WARNING'}, "No mirror bones found")
             return {'CANCELLED'}
 
         bpy.ops.pose.select_mirror(only_active=False, extend=False)
 
-        ok, msg = run_flip_animation(obj, original, mirror_only)
+        ok, msg = run_flip_animation(obj, original, mirror)
         context.scene.frame_set(saved_frame)
 
         if ok:
@@ -2487,10 +2479,9 @@ class BB_OT_flip_animation(bpy.types.Operator):
 
 
 class BB_OT_set_playback_speed(bpy.types.Operator):
-    bl_idname      = "bb_util.set_playback_speed"
-    bl_label       = "Set Playback Speed"
-    bl_description = "Изменить скорость воспроизведения через frame_map. При возврате на 1x восстанавливает исходный frame_end"
-    bl_options     = {'REGISTER', 'UNDO'}
+    bl_idname  = "bb_util.set_playback_speed"
+    bl_label   = "Set Playback Speed"
+    bl_options = {'REGISTER', 'UNDO'}
 
     speed: bpy.props.FloatProperty(name="Speed", default=1.0)
 

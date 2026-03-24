@@ -2,9 +2,9 @@
 
 bl_info = {
     "name":        "Bone Bridge",
-    "author":      "BoneBridge",
-    "version":     (1, 0, 0),
-    "blender":     (4, 0, 0),
+    "author":      "Nikolai Belyakov",
+    "version":     (1, 1, 0),
+    "blender":     (5, 0, 0),
     "location":    "View3D > N-Panel > Item > Bone Bridge",
     "description": "reParent, Aim, Manual Pivot, reConstrain — animation retargeting tools",
     "category":    "Animation",
@@ -18,7 +18,7 @@ import json
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Bone Bridge — unified addon
-#  Три режима: reParent | reParent Aim | Manual Pivot
+#  Четыре режима: reParent | Aim | Manual Pivot | reConstrain
 #  Панель: N-panel > Item > Bone Bridge
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -170,7 +170,7 @@ def ensure_all_shapes():
     get_or_create_shape_sphere()
 
 
-# Colors
+# Цвета костей
 
 def color_green(pb):
     pb.color.palette = 'CUSTOM'
@@ -193,7 +193,7 @@ def color_blue(pb):
     pb.color.custom.active = COLOR_BLUE[2]
 
 
-# Shared ctrl armature
+# Общая ctrl-арматура
 
 def get_or_create_ctrl_armature():
     col = get_or_create_bb_collection()
@@ -239,20 +239,30 @@ def set_interpolation(arm_obj):
 
 def finale(source_obj, arm_obj, select_bone_names):
     """Обе арматуры в Pose Mode, выделены указанные кости arm_obj."""
+    finale_multi([source_obj], arm_obj, select_bone_names)
+
+
+def finale_multi(source_objs, arm_obj, select_bone_names):
+    """Все source арматуры + ctrl_arm в Pose Mode, выделены указанные кости arm_obj."""
     bpy.ops.object.mode_set(mode='OBJECT')
     for o in bpy.context.selected_objects:
         o.select_set(False)
 
-    source_obj.select_set(True)
-    bpy.context.view_layer.objects.active = source_obj
+    # Выделяем все source арматуры, снимаем выделение костей
+    first = True
+    for source_obj in source_objs:
+        source_obj.select_set(True)
+        if first:
+            bpy.context.view_layer.objects.active = source_obj
+            first = False
     bpy.ops.object.mode_set(mode='POSE')
-    for pb in source_obj.pose.bones:
-        pb.select = False
-    source_obj.data.bones.active = None
+    for source_obj in source_objs:
+        for pb in source_obj.pose.bones:
+            pb.select = False
+        source_obj.data.bones.active = None
 
     bpy.ops.object.mode_set(mode='OBJECT')
     arm_obj.select_set(True)
-    source_obj.select_set(True)
     bpy.context.view_layer.objects.active = arm_obj
     bpy.ops.object.mode_set(mode='POSE')
 
@@ -291,6 +301,58 @@ def session_active(key):
     if key == SCENE_KEY_RC:
         return bool(session.get("child_bone"))
     return bool(session.get("bones"))
+
+
+def get_selected_bones_by_armature(context):
+    """Вернуть список (source_obj, [bone_snapshot_dicts]) для всех выделенных арматур.
+
+    Использует context.selected_pose_bones — единственный надёжный источник
+    выделенных костей в Pose Mode. Группирует по объекту через поиск в selected_objects.
+    Должен вызываться пока контекст ещё валиден (в invoke или в начале execute).
+    """
+    result = []
+    active_obj = context.active_object
+
+    if context.mode != 'POSE' or not active_obj or active_obj.type != 'ARMATURE':
+        return result
+
+    selected_pose_bones = context.selected_pose_bones or []
+    if not selected_pose_bones:
+        return result
+
+    # Строим карту: armature data → object
+    arm_data_to_obj = {}
+    for obj in context.selected_objects:
+        if obj.type == 'ARMATURE':
+            arm_data_to_obj[obj.data.name] = obj
+    # Активный объект тоже
+    if active_obj.type == 'ARMATURE':
+        arm_data_to_obj[active_obj.data.name] = active_obj
+
+    # Группируем pose bones по арматуре
+    by_arm = {}
+    for pb in selected_pose_bones:
+        # Определяем объект по имени арматуры кости
+        arm_name = pb.id_data.name
+        arm_obj  = arm_data_to_obj.get(arm_name)
+        if arm_obj:
+            by_arm.setdefault(arm_obj, []).append(pb)
+
+    # Снимаем снапшоты
+    for arm_obj, pose_bones in by_arm.items():
+        snaps = []
+        for pb in pose_bones:
+            world_mat = (arm_obj.matrix_world @ pb.matrix).copy()
+            snaps.append({
+                "name":          pb.name,
+                "length":        pb.length,
+                "rotation_mode": pb.rotation_mode,
+                "matrix":        world_mat,
+            })
+        if snaps:
+            result.append((arm_obj, snaps))
+
+    return result
 
 
 def tag_bone(arm_obj, bone_name, source_obj, source_bone_name):
@@ -363,10 +425,20 @@ def aim_unlock_all(pb):
 #  MODE 1 — reParent
 # ══════════════════════════════════════════════════════════════════════════════
 
-def rp_ctrl_name(src): return f"{BB_PREFIX}{src}"
+def rp_ctrl_name(bone_name, arm_name=None):
+    """Имя ctrl-кости. arm_name добавляется если кость из не-активной арматуры."""
+    if arm_name:
+        return f"{BB_PREFIX}{arm_name}_{bone_name}"
+    return f"{BB_PREFIX}{bone_name}"
 
 
-def rp_run(source_obj, selected_bones):
+def rp_run(source_obj, selected_bones, global_mode=False, arm_name=None, skip_finale=False):
+    """reParent.
+    global_mode=False: source получает Copy Loc + Copy Rot от BB_.
+    global_mode=True:  BB_ получает Copy Loc от source; source получает только Copy Rot от BB_.
+    arm_name: если задан, добавляется к имени ctrl-кости — нужно при работе с несколькими арматурами
+              чтобы избежать конфликтов имён.
+    """
     scene = bpy.context.scene
     start = scene.frame_start
     end   = scene.frame_end
@@ -374,16 +446,25 @@ def rp_run(source_obj, selected_bones):
     ensure_all_shapes()
     arm_obj = get_or_create_ctrl_armature()
 
-    # Read world matrices and pose data before any mode switch
+    # Собираем матрицы и данные костей — поддерживаем снапшоты и PoseBone
     bone_matrices = {}
     bone_rotmodes = {}
     bone_lengths  = {}
+    bone_names    = []
     for sb in selected_bones:
-        bone_matrices[sb.name] = (source_obj.matrix_world @ sb.matrix).copy()
-        bone_rotmodes[sb.name] = sb.rotation_mode
-        bone_lengths[sb.name]  = sb.length
+        if isinstance(sb, dict):
+            name = sb["name"]
+            bone_matrices[name] = sb["matrix"]
+            bone_rotmodes[name] = sb["rotation_mode"]
+            bone_lengths[name]  = sb["length"]
+        else:
+            name = sb.name
+            bone_matrices[name] = (source_obj.matrix_world @ sb.matrix).copy()
+            bone_rotmodes[name] = sb.rotation_mode
+            bone_lengths[name]  = sb.length
+        bone_names.append(name)
 
-    # Edit Mode — create BB_ bones
+    # Edit Mode — создаём BB_ кости
     bpy.ops.object.mode_set(mode='OBJECT')
     for o in bpy.context.selected_objects:
         o.select_set(False)
@@ -391,41 +472,41 @@ def rp_run(source_obj, selected_bones):
     bpy.ops.object.mode_set(mode='EDIT')
 
     arm_data = arm_obj.data
-    for sb in selected_bones:
-        name = rp_ctrl_name(sb.name)
-        if name in arm_data.edit_bones:
-            arm_data.edit_bones.remove(arm_data.edit_bones[name])
-        eb = arm_data.edit_bones.new(name)
+    for bname in bone_names:
+        ctrl_n = rp_ctrl_name(bname, arm_name)
+        if ctrl_n in arm_data.edit_bones:
+            arm_data.edit_bones.remove(arm_data.edit_bones[ctrl_n])
+        eb = arm_data.edit_bones.new(ctrl_n)
         eb.head       = (0.0, 0.0, 0.0)
-        eb.tail       = (0.0, bone_lengths[sb.name], 0.0)
+        eb.tail       = (0.0, bone_lengths[bname], 0.0)
         eb.use_deform = False
         eb.parent     = None
 
     bpy.ops.object.mode_set(mode='OBJECT')
 
-    # Pose Mode — set matrix + Child Of + Set Inverse
+    # Pose Mode — ставим матрицу + Child Of + Set Inverse
     bpy.context.view_layer.objects.active = arm_obj
     bpy.ops.object.mode_set(mode='POSE')
     bpy.context.view_layer.update()
 
     arm_imat = arm_obj.matrix_world.inverted()
 
-    for sb in selected_bones:
-        cname = rp_ctrl_name(sb.name)
+    for bname in bone_names:
+        cname = rp_ctrl_name(bname, arm_name)
         pb = arm_obj.pose.bones[cname]
-        pb.rotation_mode          = bone_rotmodes[sb.name]
+        pb.rotation_mode          = bone_rotmodes[bname]
         pb.custom_shape           = get_or_create_shape_axes()
         pb.custom_shape_scale_xyz = (1.25, 1.25, 1.25)
         color_green(pb)
 
-        pb.matrix = arm_imat @ bone_matrices[sb.name]
+        pb.matrix = arm_imat @ bone_matrices[bname]
         bpy.context.view_layer.update()
 
         remove_bb_constraints(pb)
         childof = pb.constraints.new(type='CHILD_OF')
         childof.name      = "BoneBridge_CHILD_OF"
         childof.target    = source_obj
-        childof.subtarget = sb.name
+        childof.subtarget = bname
         bpy.context.view_layer.update()
 
         for p in arm_obj.pose.bones:
@@ -434,8 +515,8 @@ def rp_run(source_obj, selected_bones):
         pb.select = True
         bpy.ops.constraint.childof_set_inverse(constraint=childof.name, owner='BONE')
 
-    # Bake
-    ctrl_names = [rp_ctrl_name(sb.name) for sb in selected_bones]
+    # Бейк
+    ctrl_names = [rp_ctrl_name(bname, arm_name) for bname in bone_names]
     bpy.ops.object.mode_set(mode='OBJECT')
     for o in bpy.context.selected_objects:
         o.select_set(False)
@@ -462,214 +543,113 @@ def rp_run(source_obj, selected_bones):
     bpy.context.view_layer.update()
     set_interpolation(arm_obj)
 
-    # Remove Child Of
+    # Убираем Child Of
     bpy.ops.object.mode_set(mode='OBJECT')
     for cname in ctrl_names:
         pb = arm_obj.pose.bones[cname]
         for c in [c for c in list(pb.constraints) if c.name == "BoneBridge_CHILD_OF"]:
             pb.constraints.remove(c)
 
-    # Tag created bones with source info
-    for sb in selected_bones:
-        tag_bone(arm_obj, rp_ctrl_name(sb.name), source_obj, sb.name)
+    # Тегируем созданные кости
+    for bname in bone_names:
+        tag_bone(arm_obj, rp_ctrl_name(bname, arm_name), source_obj, bname)
 
-    # Copy Loc/Rot on source bones
+    # ── Финальные констрейнты — зависят от режима ─────────────────────────────
+    bpy.ops.object.mode_set(mode='OBJECT')
     for o in bpy.context.selected_objects:
         o.select_set(False)
     bpy.context.view_layer.objects.active = source_obj
     source_obj.select_set(True)
     bpy.ops.object.mode_set(mode='POSE')
-
-    for sb in selected_bones:
-        cname = rp_ctrl_name(sb.name)
-        remove_bb_constraints(sb)
-        cl = sb.constraints.new(type='COPY_LOCATION')
-        cl.name = "BoneBridge_COPY_LOCATION"
-        cl.target = arm_obj; cl.subtarget = cname
-        cl.owner_space = 'WORLD'; cl.target_space = 'WORLD'
-        cr = sb.constraints.new(type='COPY_ROTATION')
-        cr.name = "BoneBridge_COPY_ROTATION"
-        cr.target = arm_obj; cr.subtarget = cname
-        cr.owner_space = 'WORLD'; cr.target_space = 'WORLD'
-
-    finale(source_obj, arm_obj, ctrl_names)
-    print(f"✅ reParent: {len(selected_bones)} костей")
-
-
-def rp_run_global(source_obj, selected_bones):
-    """Global mode: BB_ gets Copy Location from source. Source gets only Copy Rotation from BB_."""
-    scene = bpy.context.scene
-    start = scene.frame_start
-    end   = scene.frame_end
-
-    ensure_all_shapes()
-    arm_obj = get_or_create_ctrl_armature()
-
-    bone_matrices = {}
-    bone_rotmodes = {}
-    bone_lengths  = {}
-    for sb in selected_bones:
-        bone_matrices[sb.name] = (source_obj.matrix_world @ sb.matrix).copy()
-        bone_rotmodes[sb.name] = sb.rotation_mode
-        bone_lengths[sb.name]  = sb.length
-
-    # Edit Mode — create BB_ bones
-    bpy.ops.object.mode_set(mode='OBJECT')
-    for o in bpy.context.selected_objects:
-        o.select_set(False)
-    bpy.context.view_layer.objects.active = arm_obj
-    bpy.ops.object.mode_set(mode='EDIT')
-
-    arm_data = arm_obj.data
-    for sb in selected_bones:
-        name = rp_ctrl_name(sb.name)
-        if name in arm_data.edit_bones:
-            arm_data.edit_bones.remove(arm_data.edit_bones[name])
-        eb = arm_data.edit_bones.new(name)
-        eb.head       = (0.0, 0.0, 0.0)
-        eb.tail       = (0.0, bone_lengths[sb.name], 0.0)
-        eb.use_deform = False
-        eb.parent     = None
-
-    bpy.ops.object.mode_set(mode='OBJECT')
-
-    # Pose Mode — set matrix + Child Of + Set Inverse
-    bpy.context.view_layer.objects.active = arm_obj
-    bpy.ops.object.mode_set(mode='POSE')
     bpy.context.view_layer.update()
 
-    arm_imat = arm_obj.matrix_world.inverted()
+    if global_mode:
+        # Global: BB_ следует за source по локации; source берёт только вращение от BB_
+        for bname in bone_names:
+            cname = rp_ctrl_name(bname, arm_name)
+            source_pb = source_obj.pose.bones[bname]
+            remove_bb_constraints(source_pb)
+            cr = source_pb.constraints.new(type='COPY_ROTATION')
+            cr.name         = "BoneBridge_COPY_ROTATION"
+            cr.target       = arm_obj
+            cr.subtarget    = cname
+            cr.owner_space  = 'WORLD'
+            cr.target_space = 'WORLD'
 
-    for sb in selected_bones:
-        cname = rp_ctrl_name(sb.name)
-        pb = arm_obj.pose.bones[cname]
-        pb.rotation_mode          = bone_rotmodes[sb.name]
-        pb.custom_shape           = get_or_create_shape_axes()
-        pb.custom_shape_scale_xyz = (1.25, 1.25, 1.25)
-        color_green(pb)
+        bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.context.view_layer.objects.active = arm_obj
+        bpy.ops.object.mode_set(mode='POSE')
+        for bname in bone_names:
+            cname = rp_ctrl_name(bname, arm_name)
+            pb = arm_obj.pose.bones[cname]
+            remove_bb_constraints(pb)
+            cl = pb.constraints.new(type='COPY_LOCATION')
+            cl.name         = "BoneBridge_COPY_LOCATION"
+            cl.target       = source_obj
+            cl.subtarget    = bname
+            cl.owner_space  = 'WORLD'
+            cl.target_space = 'WORLD'
+    else:
+        # Стандартный режим: source получает Copy Loc + Copy Rot от BB_
+        for bname in bone_names:
+            cname = rp_ctrl_name(bname, arm_name)
+            source_pb = source_obj.pose.bones[bname]
+            remove_bb_constraints(source_pb)
+            cl = source_pb.constraints.new(type='COPY_LOCATION')
+            cl.name = "BoneBridge_COPY_LOCATION"
+            cl.target = arm_obj; cl.subtarget = cname
+            cl.owner_space = 'WORLD'; cl.target_space = 'WORLD'
+            cr = source_pb.constraints.new(type='COPY_ROTATION')
+            cr.name = "BoneBridge_COPY_ROTATION"
+            cr.target = arm_obj; cr.subtarget = cname
+            cr.owner_space = 'WORLD'; cr.target_space = 'WORLD'
 
-        pb.matrix = arm_imat @ bone_matrices[sb.name]
-        bpy.context.view_layer.update()
-
-        remove_bb_constraints(pb)
-        childof = pb.constraints.new(type='CHILD_OF')
-        childof.name      = "BoneBridge_CHILD_OF"
-        childof.target    = source_obj
-        childof.subtarget = sb.name
-        bpy.context.view_layer.update()
-
-        for p in arm_obj.pose.bones:
-            p.select = False
-        arm_obj.data.bones.active = arm_obj.data.bones[cname]
-        pb.select = True
-        bpy.ops.constraint.childof_set_inverse(constraint=childof.name, owner='BONE')
-
-    # Bake
-    ctrl_names = [rp_ctrl_name(sb.name) for sb in selected_bones]
-    bpy.ops.object.mode_set(mode='OBJECT')
-    for o in bpy.context.selected_objects:
-        o.select_set(False)
-    bpy.context.view_layer.objects.active = arm_obj
-    bpy.ops.object.mode_set(mode='POSE')
-    for pb in arm_obj.pose.bones:
-        pb.select = False
-    arm_obj.data.bones.active = None
-    for cname in ctrl_names:
-        arm_obj.pose.bones[cname].select = True
-        arm_obj.data.bones.active = arm_obj.data.bones[cname]
-
-    if not arm_obj.animation_data:
-        arm_obj.animation_data_create()
-    if not arm_obj.animation_data.action:
-        arm_obj.animation_data.action = bpy.data.actions.new(name=f"{arm_obj.name}_Action")
-
-    bpy.ops.nla.bake(
-        frame_start=start, frame_end=end,
-        only_selected=True, visual_keying=True,
-        clear_constraints=False, use_current_action=True,
-        bake_types={'POSE'}
-    )
-    bpy.context.view_layer.update()
-    set_interpolation(arm_obj)
-
-    # Remove Child Of
-    bpy.ops.object.mode_set(mode='OBJECT')
-    for cname in ctrl_names:
-        pb = arm_obj.pose.bones[cname]
-        for c in [c for c in list(pb.constraints) if c.name == "BoneBridge_CHILD_OF"]:
-            pb.constraints.remove(c)
-
-    # Tag created bones with source info
-    for sb in selected_bones:
-        tag_bone(arm_obj, rp_ctrl_name(sb.name), source_obj, sb.name)
-
-    # Global mode constraints:
-    # BB_ ctrl bone  → Copy Location from source
-    # source bone    → Copy Rotation from BB_ only
-    bpy.context.view_layer.objects.active = arm_obj
-    bpy.ops.object.mode_set(mode='POSE')
-    for sb in selected_bones:
-        cname = rp_ctrl_name(sb.name)
-        pb = arm_obj.pose.bones[cname]
-        remove_bb_constraints(pb)
-        cl = pb.constraints.new(type='COPY_LOCATION')
-        cl.name         = "BoneBridge_COPY_LOCATION"
-        cl.target       = source_obj
-        cl.subtarget    = sb.name
-        cl.owner_space  = 'WORLD'
-        cl.target_space = 'WORLD'
-
-    for o in bpy.context.selected_objects:
-        o.select_set(False)
-    bpy.context.view_layer.objects.active = source_obj
-    source_obj.select_set(True)
-    bpy.ops.object.mode_set(mode='POSE')
-
-    for sb in selected_bones:
-        cname = rp_ctrl_name(sb.name)
-        remove_bb_constraints(sb)
-        cr = sb.constraints.new(type='COPY_ROTATION')
-        cr.name         = "BoneBridge_COPY_ROTATION"
-        cr.target       = arm_obj
-        cr.subtarget    = cname
-        cr.owner_space  = 'WORLD'
-        cr.target_space = 'WORLD'
-
-    finale(source_obj, arm_obj, ctrl_names)
-    print(f"✅ Global reParent: {len(selected_bones)} костей")
+    if not skip_finale:
+        finale(source_obj, arm_obj, ctrl_names)
+    mode_label = "Global reParent" if global_mode else "reParent"
+    print(f"✅ {mode_label}: {len(bone_names)} костей из {source_obj.name}")
+    return ctrl_names
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MODE 2 — reParent Aim  (упрощённый)
-#
-#  Step 1: создаём AIM_LOC_<name> на позиции source кости + 125% длины по Y
-#          (world space). Кость повторяет rotation_mode source кости.
-#          Все трансформы заблокированы кроме Location Y (только +).
-#
-#  GO:     снимаем блокировки → бейкаем AIM_LOC → вешаем Damped Track:
-#            source → AIM_LOC  (TRACK_Y)
-#            AIM_LOC → source  (TRACK_Y)
-#          AIM_LOC остаётся свободной после GO (блокировки не восстанавливаются).
+#  MODE 2 — Aim
 # ══════════════════════════════════════════════════════════════════════════════
 
 def aim_loc_name(src): return f"{AIM_LOC_PREFIX}{src}"
 
 
-def aim_step1(source_obj, selected_bones):
+def aim_step1(sources_list):
+    """sources_list: список (source_obj, [selected_pose_bones])"""
     ensure_all_shapes()
     arm_obj = get_or_create_ctrl_armature()
 
-    bone_data = []
-    for sb in selected_bones:
-        world_mat = (source_obj.matrix_world @ sb.matrix).copy()
-        bone_data.append({
-            "name":          sb.name,
-            "rotation_mode": sb.rotation_mode,
-            "length":        sb.length,
-            "matrix":        [list(r) for r in world_mat],
-        })
+    # Собираем bone_data по всем арматурам — поддерживаем снапшоты и PoseBone
+    all_sources = []
+    for source_obj, selected_bones in sources_list:
+        bone_data = []
+        for sb in selected_bones:
+            if isinstance(sb, dict):
+                bone_data.append({
+                    "name":          sb["name"],
+                    "rotation_mode": sb["rotation_mode"],
+                    "length":        sb["length"],
+                    "matrix":        [list(r) for r in sb["matrix"]],
+                })
+            else:
+                world_mat = (source_obj.matrix_world @ sb.matrix).copy()
+                bone_data.append({
+                    "name":          sb.name,
+                    "rotation_mode": sb.rotation_mode,
+                    "length":        sb.length,
+                    "matrix":        [list(r) for r in world_mat],
+                })
+        if bone_data:
+            all_sources.append({"source_obj": source_obj.name, "bones": bone_data})
 
-    # ── Edit Mode: создаём одну кость AIM_LOC_ на каждую выделенную ──────────
+    if not all_sources:
+        return
+
+    # ── Edit Mode: создаём AIM_LOC_ кости для всех арматур ───────────────────
     bpy.ops.object.mode_set(mode='OBJECT')
     for o in bpy.context.selected_objects:
         o.select_set(False)
@@ -679,29 +659,38 @@ def aim_step1(source_obj, selected_bones):
     arm_imat = arm_obj.matrix_world.inverted()
     arm_data = arm_obj.data
 
-    # Считаем позиции в пространстве арматуры и сразу ставим в Edit Mode
-    bone_aim_data = {}
-    for bd in bone_data:
-        src_mat    = Matrix([bd["matrix"][i] for i in range(4)])
-        src_origin = src_mat.translation
-        y_world    = src_mat.to_3x3().col[1].normalized()
-        aim_world  = src_origin + y_world * bd["length"] * 1.25
-        tail_world = aim_world  + y_world * bd["length"]
-        bone_aim_data[bd["name"]] = {
-            "head": (arm_imat @ aim_world.to_4d()).to_3d(),
-            "tail": (arm_imat @ tail_world.to_4d()).to_3d(),
-        }
+    # При нескольких source-арматурах добавляем имя арматуры к локатору
+    # чтобы избежать конфликтов имён (напр. AIM_LOC_Armature_Bone)
+    multi = len(all_sources) > 1
 
-    for bd in bone_data:
-        lname = aim_loc_name(bd["name"])
-        if lname in arm_data.edit_bones:
-            arm_data.edit_bones.remove(arm_data.edit_bones[lname])
-        ex            = bone_aim_data[bd["name"]]
-        eb            = arm_data.edit_bones.new(lname)
-        eb.head       = ex["head"]
-        eb.tail       = ex["tail"]
-        eb.use_deform = False
-        eb.parent     = None
+    all_lnames = []
+    for src_entry in all_sources:
+        source_obj  = bpy.data.objects[src_entry["source_obj"]]
+        bone_data   = src_entry["bones"]
+        src_arm_pfx = source_obj.name if multi else None
+        bone_aim_data = {}
+        for bd in bone_data:
+            src_mat    = Matrix([bd["matrix"][i] for i in range(4)])
+            src_origin = src_mat.translation
+            y_world    = src_mat.to_3x3().col[1].normalized()
+            aim_world  = src_origin + y_world * bd["length"] * 1.25
+            tail_world = aim_world  + y_world * bd["length"]
+            bone_aim_data[bd["name"]] = {
+                "head": (arm_imat @ aim_world.to_4d()).to_3d(),
+                "tail": (arm_imat @ tail_world.to_4d()).to_3d(),
+            }
+        for bd in bone_data:
+            lname = bd.get("lname", aim_loc_name(bd["name"])) if not src_arm_pfx else f"{AIM_LOC_PREFIX}{src_arm_pfx}_{bd['name']}"
+            bd["lname"] = lname  # сохраняем для Pose Mode
+            if lname in arm_data.edit_bones:
+                arm_data.edit_bones.remove(arm_data.edit_bones[lname])
+            ex            = bone_aim_data[bd["name"]]
+            eb            = arm_data.edit_bones.new(lname)
+            eb.head       = ex["head"]
+            eb.tail       = ex["tail"]
+            eb.use_deform = False
+            eb.parent     = None
+            all_lnames.append(lname)
 
     bpy.ops.object.mode_set(mode='OBJECT')
 
@@ -710,41 +699,46 @@ def aim_step1(source_obj, selected_bones):
     bpy.ops.object.mode_set(mode='POSE')
     bpy.context.view_layer.update()
 
-    for bd in bone_data:
-        lname = aim_loc_name(bd["name"])
-        pb    = arm_obj.pose.bones[lname]
-        pb.rotation_mode          = bd["rotation_mode"]
-        pb.custom_shape           = get_or_create_shape_sphere()
-        pb.custom_shape_scale_xyz = (0.25, 0.25, 0.25)
-        color_green(pb)
-        aim_lock_all_except_y(pb)
+    for src_entry in all_sources:
+        for bd in src_entry["bones"]:
+            lname = bd["lname"]
+            pb    = arm_obj.pose.bones[lname]
+            pb.rotation_mode          = bd["rotation_mode"]
+            pb.custom_shape           = get_or_create_shape_sphere()
+            pb.custom_shape_scale_xyz = (0.25, 0.25, 0.25)
+            color_green(pb)
+            aim_lock_all_except_y(pb)
 
     save_session(SCENE_KEY_AIM, {
-        "source_obj": source_obj.name,
-        "arm_obj":    arm_obj.name,
-        "bones":      bone_data,
+        "arm_obj": arm_obj.name,
+        "sources": all_sources,
+        "bones":   [bd for src in all_sources for bd in src["bones"]],
     })
 
-    # ── Финал Step 1: обе арматуры в Pose, выделены AIM_LOC_ кости ───────────
+    # ── Финал Step 1: все арматуры в Pose, выделены AIM_LOC_ кости ──────────
     for o in bpy.context.selected_objects:
         o.select_set(False)
-    source_obj.select_set(True)
+    for src_entry in all_sources:
+        src_obj = bpy.data.objects.get(src_entry["source_obj"])
+        if src_obj:
+            src_obj.select_set(True)
+            for pb in src_obj.pose.bones:
+                pb.select = False
+            src_obj.data.bones.active = None
     arm_obj.select_set(True)
     bpy.context.view_layer.objects.active = arm_obj
     bpy.ops.object.mode_set(mode='POSE')
     for pb in arm_obj.pose.bones:
         pb.select = False
     arm_obj.data.bones.active = None
-    for pb in source_obj.pose.bones:
-        pb.select = False
-    source_obj.data.bones.active = None
-    for bd in bone_data:
-        lname = aim_loc_name(bd["name"])
-        if lname in arm_obj.pose.bones:
-            arm_obj.pose.bones[lname].select = True
-            arm_obj.data.bones.active = arm_obj.data.bones[lname]
+    for src_entry in all_sources:
+        for bd in src_entry["bones"]:
+            lname = bd.get("lname", aim_loc_name(bd["name"]))
+            if lname in arm_obj.pose.bones:
+                arm_obj.pose.bones[lname].select = True
+                arm_obj.data.bones.active = arm_obj.data.bones[lname]
 
-    print("✅ Aim: AIM_LOC локаторы созданы. Переместите их по Y, затем нажмите GO.")
+    print(f"✅ Aim: AIM_LOC локаторы созданы ({len(all_lnames)} шт.). Переместите их по Y, затем нажмите GO.")
 
 
 def aim_step2_go():
@@ -753,17 +747,30 @@ def aim_step2_go():
         print("❌ Нет активной Aim сессии.")
         return
 
-    source_obj = bpy.data.objects.get(session["source_obj"])
-    arm_obj    = bpy.data.objects.get(session["arm_obj"])
-    bone_data  = session["bones"]
+    arm_obj     = bpy.data.objects.get(session["arm_obj"])
+    all_sources = session.get("sources", [])
 
-    if not source_obj or not arm_obj:
+    # Обратная совместимость со старым форматом сессии
+    if not all_sources and "source_obj" in session:
+        all_sources = [{"source_obj": session["source_obj"], "bones": session["bones"]}]
+
+    if not arm_obj or not all_sources:
         clear_session(SCENE_KEY_AIM)
         return
 
     scene = bpy.context.scene
     start = scene.frame_start
     end   = scene.frame_end
+
+    # Плоский список bone_data со ссылкой на source_obj для каждой кости
+    bone_entries = []  # (source_obj, bd)
+    for src_entry in all_sources:
+        src_obj = bpy.data.objects.get(src_entry["source_obj"])
+        if src_obj:
+            for bd in src_entry["bones"]:
+                bone_entries.append((src_obj, bd))
+
+    all_bone_data = [bd for _, bd in bone_entries]
 
     # ── Шаг 1: снимаем блокировки с AIM_LOC_ костей ──────────────────────────
     bpy.ops.object.mode_set(mode='OBJECT')
@@ -773,25 +780,24 @@ def aim_step2_go():
     bpy.ops.object.mode_set(mode='POSE')
     bpy.context.view_layer.update()
 
-    for bd in bone_data:
-        lname = aim_loc_name(bd["name"])
+    for bd in all_bone_data:
+        lname = bd.get("lname", aim_loc_name(bd["name"]))
         pb    = arm_obj.pose.bones.get(lname)
         if pb:
             aim_unlock_all(pb)
-            # Сбрасываем X и Z в нули — пользователь мог случайно сдвинуть
             pb.location[0] = 0.0
             pb.location[2] = 0.0
     bpy.context.view_layer.update()
 
     # ── Шаг 2: Child Of AIM_LOC_ → source кость → Set Inverse ───────────────
-    for bd in bone_data:
-        lname  = aim_loc_name(bd["name"])
+    for source_obj, bd in bone_entries:
+        lname  = bd.get("lname", aim_loc_name(bd["name"]))
         pb_loc = arm_obj.pose.bones[lname]
         for c in list(pb_loc.constraints):
             pb_loc.constraints.remove(c)
-        childof          = pb_loc.constraints.new(type='CHILD_OF')
-        childof.name     = "BoneBridge_CHILD_OF"
-        childof.target   = source_obj
+        childof           = pb_loc.constraints.new(type='CHILD_OF')
+        childof.name      = "BoneBridge_CHILD_OF"
+        childof.target    = source_obj
         childof.subtarget = bd["name"]
         bpy.context.view_layer.update()
         bpy.context.view_layer.objects.active = arm_obj
@@ -809,8 +815,8 @@ def aim_step2_go():
     for pb in arm_obj.pose.bones:
         pb.select = False
     arm_obj.data.bones.active = None
-    for bd in bone_data:
-        lname = aim_loc_name(bd["name"])
+    for bd in all_bone_data:
+        lname = bd.get("lname", aim_loc_name(bd["name"]))
         arm_obj.pose.bones[lname].select = True
         arm_obj.data.bones.active = arm_obj.data.bones[lname]
 
@@ -830,14 +836,14 @@ def aim_step2_go():
 
     # ── Шаг 4: убираем Child Of ───────────────────────────────────────────────
     bpy.ops.object.mode_set(mode='OBJECT')
-    for bd in bone_data:
-        lname = aim_loc_name(bd["name"])
+    for bd in all_bone_data:
+        lname = bd.get("lname", aim_loc_name(bd["name"]))
         pb    = arm_obj.pose.bones[lname]
         for c in [c for c in list(pb.constraints) if c.name == "BoneBridge_CHILD_OF"]:
             pb.constraints.remove(c)
 
-    # ── Шаг 4б: удаляем fcurves вращения/scale AIM_LOC_, обнуляем pose ────────
-    lnames = {aim_loc_name(bd["name"]) for bd in bone_data}
+    # ── Шаг 4б: удаляем fcurves вращения/scale AIM_LOC_, обнуляем pose ───────
+    lnames = {bd.get("lname", aim_loc_name(bd["name"])) for bd in all_bone_data}
     if arm_obj.animation_data and arm_obj.animation_data.action:
         remove_fcurves_for_bones(
             arm_obj.animation_data.action,
@@ -845,11 +851,10 @@ def aim_step2_go():
             path_filter=("rotation", "scale"),
         )
 
-    # Обнуляем rotation/scale в pose напрямую
     bpy.context.view_layer.objects.active = arm_obj
     bpy.ops.object.mode_set(mode='POSE')
-    for bd in bone_data:
-        lname = aim_loc_name(bd["name"])
+    for bd in all_bone_data:
+        lname = bd.get("lname", aim_loc_name(bd["name"]))
         pb    = arm_obj.pose.bones.get(lname)
         if pb:
             if pb.rotation_mode == 'QUATERNION':
@@ -862,19 +867,22 @@ def aim_step2_go():
     bpy.ops.object.mode_set(mode='OBJECT')
 
     # ── Шаг 5: тегируем AIM_LOC_ кости ───────────────────────────────────────
-    for bd in bone_data:
-        tag_bone(arm_obj, aim_loc_name(bd["name"]), source_obj, bd["name"])
+    for source_obj, bd in bone_entries:
+        tag_bone(arm_obj, bd.get("lname", aim_loc_name(bd["name"])), source_obj, bd["name"])
 
-    # ── Шаг 6: Damped Track — source → AIM_LOC_ ──────────────────────────────
-    bpy.ops.object.mode_set(mode='OBJECT')
-    for o in bpy.context.selected_objects:
-        o.select_set(False)
-    bpy.context.view_layer.objects.active = source_obj
-    source_obj.select_set(True)
-    bpy.ops.object.mode_set(mode='POSE')
+    # ── Шаг 6: Damped Track — source → AIM_LOC_ (по каждой арматуре) ─────────
+    processed_objs = set()
+    for source_obj, bd in bone_entries:
+        if source_obj.name not in processed_objs:
+            bpy.ops.object.mode_set(mode='OBJECT')
+            for o in bpy.context.selected_objects:
+                o.select_set(False)
+            bpy.context.view_layer.objects.active = source_obj
+            source_obj.select_set(True)
+            bpy.ops.object.mode_set(mode='POSE')
+            processed_objs.add(source_obj.name)
 
-    for bd in bone_data:
-        lname = aim_loc_name(bd["name"])
+        lname = bd.get("lname", aim_loc_name(bd["name"]))
         sb    = source_obj.pose.bones[bd["name"]]
         remove_bb_constraints(sb)
         dt            = sb.constraints.new(type='DAMPED_TRACK')
@@ -883,16 +891,14 @@ def aim_step2_go():
         dt.subtarget  = lname
         dt.track_axis = TRACK_AXIS
 
-    # ── Шаг 7: убираем все оставшиеся констрейнты с AIM_LOC_ ─────────────────
-    # AIM_LOC_ — просто точка в пространстве, никуда не смотрит.
-    # Взаимный Damped Track создавал цикличную зависимость и задержку.
+    # ── Шаг 7: убираем констрейнты с AIM_LOC_ ────────────────────────────────
     bpy.ops.object.mode_set(mode='OBJECT')
     bpy.context.view_layer.objects.active = arm_obj
     bpy.ops.object.mode_set(mode='POSE')
     bpy.context.view_layer.update()
 
-    for bd in bone_data:
-        lname  = aim_loc_name(bd["name"])
+    for bd in all_bone_data:
+        lname  = bd.get("lname", aim_loc_name(bd["name"]))
         pb_loc = arm_obj.pose.bones[lname]
         for c in list(pb_loc.constraints):
             pb_loc.constraints.remove(c)
@@ -900,8 +906,9 @@ def aim_step2_go():
     bpy.ops.object.mode_set(mode='OBJECT')
     clear_session(SCENE_KEY_AIM)
 
-    finale(source_obj, arm_obj, [aim_loc_name(bd["name"]) for bd in bone_data])
-    print("✅ Aim: готово.")
+    all_source_objs = [bpy.data.objects.get(s["source_obj"]) for s in all_sources if bpy.data.objects.get(s["source_obj"])]
+    finale_multi(all_source_objs, arm_obj, [bd.get("lname", aim_loc_name(bd["name"])) for bd in all_bone_data])
+    print(f"✅ Aim: готово ({len(all_bone_data)} костей из {len(all_sources)} арматур).")
 
 
 def aim_cancel():
@@ -913,7 +920,7 @@ def aim_cancel():
     clear_session(SCENE_KEY_AIM)
     if not arm_obj:
         return
-    bones_to_remove = [aim_loc_name(bd["name"]) for bd in bone_data]
+    bones_to_remove = [bd.get("lname", aim_loc_name(bd["name"])) for bd in bone_data]
     bpy.ops.object.mode_set(mode='OBJECT')
     for o in bpy.context.selected_objects:
         o.select_set(False)
@@ -934,19 +941,35 @@ def mp_loc_name(src):   return f"{MP_PREFIX}{src}"
 def mp_child_name(src): return f"{MPC_PREFIX}{src}"
 
 
-def mp_step1(source_obj, selected_bones):
+def mp_step1(sources_list):
+    """sources_list: список (source_obj, [selected_pose_bones])"""
     ensure_all_shapes()
     arm_obj = get_or_create_ctrl_armature()
 
-    bone_data = []
-    for sb in selected_bones:
-        mat = (source_obj.matrix_world @ sb.matrix).copy()
-        bone_data.append({
-            "name":          sb.name,
-            "rotation_mode": sb.rotation_mode,
-            "length":        sb.length,
-            "matrix":        [list(r) for r in mat],
-        })
+    all_sources = []
+    for source_obj, selected_bones in sources_list:
+        bone_data = []
+        for sb in selected_bones:
+            if isinstance(sb, dict):
+                bone_data.append({
+                    "name":          sb["name"],
+                    "rotation_mode": sb["rotation_mode"],
+                    "length":        sb["length"],
+                    "matrix":        [list(r) for r in sb["matrix"]],
+                })
+            else:
+                mat = (source_obj.matrix_world @ sb.matrix).copy()
+                bone_data.append({
+                    "name":          sb.name,
+                    "rotation_mode": sb.rotation_mode,
+                    "length":        sb.length,
+                    "matrix":        [list(r) for r in mat],
+                })
+        if bone_data:
+            all_sources.append({"source_obj": source_obj.name, "bones": bone_data})
+
+    if not all_sources:
+        return
 
     bpy.ops.object.mode_set(mode='OBJECT')
     for o in bpy.context.selected_objects:
@@ -955,17 +978,22 @@ def mp_step1(source_obj, selected_bones):
     bpy.ops.object.mode_set(mode='EDIT')
 
     arm_data = arm_obj.data
-    for bd in bone_data:
-        lname = mp_loc_name(bd["name"])
-        cname = mp_child_name(bd["name"])
-        for n in (lname, cname):
-            if n in arm_data.edit_bones:
-                arm_data.edit_bones.remove(arm_data.edit_bones[n])
-        eb = arm_data.edit_bones.new(lname)
-        eb.head = (0.0, 0.0, 0.0)
-        eb.tail = (0.0, bd["length"], 0.0)
-        eb.use_deform = False
-        eb.parent = None
+    multi = len(all_sources) > 1
+    for src_entry in all_sources:
+        src_arm_pfx = bpy.data.objects[src_entry["source_obj"]].name if multi else None
+        for bd in src_entry["bones"]:
+            lname = bd.get("lname", mp_loc_name(bd["name"])) if not src_arm_pfx else f"{MP_PREFIX}{src_arm_pfx}_{bd['name']}"
+            cname = bd.get("cname", mp_child_name(bd["name"])) if not src_arm_pfx else f"{MPC_PREFIX}{src_arm_pfx}_{bd['name']}"
+            bd["lname"] = lname
+            bd["cname"] = cname
+            for n in (lname, cname):
+                if n in arm_data.edit_bones:
+                    arm_data.edit_bones.remove(arm_data.edit_bones[n])
+            eb = arm_data.edit_bones.new(lname)
+            eb.head = (0.0, 0.0, 0.0)
+            eb.tail = (0.0, bd["length"], 0.0)
+            eb.use_deform = False
+            eb.parent = None
 
     bpy.ops.object.mode_set(mode='OBJECT')
 
@@ -973,43 +1001,49 @@ def mp_step1(source_obj, selected_bones):
     bpy.ops.object.mode_set(mode='POSE')
     bpy.context.view_layer.update()
 
-    for bd in bone_data:
-        lname = mp_loc_name(bd["name"])
-        pb = arm_obj.pose.bones[lname]
-        pb.rotation_mode          = bd["rotation_mode"]
-        pb.custom_shape           = get_or_create_shape_axes()
-        pb.custom_shape_scale_xyz = (1.3, 1.3, 1.3)
-        color_orange(pb)
-        mat = Matrix([bd["matrix"][i] for i in range(4)])
-        pb.matrix = arm_obj.matrix_world.inverted() @ mat
+    for src_entry in all_sources:
+        for bd in src_entry["bones"]:
+            lname = bd.get("lname", mp_loc_name(bd["name"]))
+            pb = arm_obj.pose.bones[lname]
+            pb.rotation_mode          = bd["rotation_mode"]
+            pb.custom_shape           = get_or_create_shape_axes()
+            pb.custom_shape_scale_xyz = (1.3, 1.3, 1.3)
+            color_orange(pb)
+            mat = Matrix([bd["matrix"][i] for i in range(4)])
+            pb.matrix = arm_obj.matrix_world.inverted() @ mat
 
     bpy.context.view_layer.update()
 
+    all_bone_data = [bd for src in all_sources for bd in src["bones"]]
     save_session(SCENE_KEY_MP, {
-        "source_obj": source_obj.name,
-        "arm_obj":    arm_obj.name,
-        "bones":      bone_data,
+        "arm_obj": arm_obj.name,
+        "sources": all_sources,
+        "bones":   all_bone_data,
     })
 
     for o in bpy.context.selected_objects:
         o.select_set(False)
-    source_obj.select_set(True)
+    for src_entry in all_sources:
+        src_obj = bpy.data.objects.get(src_entry["source_obj"])
+        if src_obj:
+            src_obj.select_set(True)
+            for pb in src_obj.pose.bones:
+                pb.select = False
+            src_obj.data.bones.active = None
     arm_obj.select_set(True)
     bpy.context.view_layer.objects.active = arm_obj
     bpy.ops.object.mode_set(mode='POSE')
     for pb in arm_obj.pose.bones:
         pb.select = False
     arm_obj.data.bones.active = None
-    for pb in source_obj.pose.bones:
-        pb.select = False
-    source_obj.data.bones.active = None
-    for bd in bone_data:
-        lname = mp_loc_name(bd["name"])
-        if lname in arm_obj.pose.bones:
-            arm_obj.pose.bones[lname].select = True
-            arm_obj.data.bones.active = arm_obj.data.bones[lname]
+    for src_entry in all_sources:
+        for bd in src_entry["bones"]:
+            lname = bd.get("lname", mp_loc_name(bd["name"]))
+            if lname in arm_obj.pose.bones:
+                arm_obj.pose.bones[lname].select = True
+                arm_obj.data.bones.active = arm_obj.data.bones[lname]
 
-    print("✅ Manual Pivot: локаторы созданы.")
+    print(f"✅ Manual Pivot: локаторы созданы ({len(all_bone_data)} шт.). Переместите их, затем нажмите GO.")
 
 
 def mp_step2_go():
@@ -1018,11 +1052,14 @@ def mp_step2_go():
         print("❌ Нет активной Manual Pivot сессии.")
         return
 
-    source_obj = bpy.data.objects.get(session["source_obj"])
-    arm_obj    = bpy.data.objects.get(session["arm_obj"])
-    bone_data  = session["bones"]
+    arm_obj     = bpy.data.objects.get(session["arm_obj"])
+    all_sources = session.get("sources", [])
 
-    if not source_obj or not arm_obj:
+    # Обратная совместимость
+    if not all_sources and "source_obj" in session:
+        all_sources = [{"source_obj": session["source_obj"], "bones": session["bones"]}]
+
+    if not arm_obj or not all_sources:
         clear_session(SCENE_KEY_MP)
         return
 
@@ -1039,13 +1076,24 @@ def mp_step2_go():
 
     arm_imat = arm_obj.matrix_world.inverted()
 
+    # Собираем bone_entries: (source_obj, bd) + world матрицы
+    # Ключ: (src_obj_name, bone_name) — чтобы избежать конфликтов при одинаковых именах
+    bone_entries = []
     src_bone_world_mats = {}
-    for bd in bone_data:
-        src_bone_world_mats[bd["name"]] = Matrix([bd["matrix"][i] for i in range(4)])
+    for src_entry in all_sources:
+        src_obj = bpy.data.objects.get(src_entry["source_obj"])
+        if not src_obj:
+            continue
+        for bd in src_entry["bones"]:
+            bd["source_obj"] = src_obj.name  # сохраняем для Edit Mode блока
+            bone_entries.append((src_obj, bd))
+            src_bone_world_mats[(src_obj.name, bd["name"])] = Matrix([bd["matrix"][i] for i in range(4)])
 
-    # Child Of on MPIVOT_ → source bone → Set Inverse → bake
-    for bd in bone_data:
-        lname = mp_loc_name(bd["name"])
+    all_bone_data = [bd for _, bd in bone_entries]
+
+    # Child Of на MPIVOT_ → source кость → Set Inverse
+    for source_obj, bd in bone_entries:
+        lname = bd.get("lname", mp_loc_name(bd["name"]))
         pb = arm_obj.pose.bones[lname]
         for c in list(pb.constraints):
             pb.constraints.remove(c)
@@ -1068,8 +1116,8 @@ def mp_step2_go():
     for pb in arm_obj.pose.bones:
         pb.select = False
     arm_obj.data.bones.active = None
-    for bd in bone_data:
-        lname = mp_loc_name(bd["name"])
+    for bd in all_bone_data:
+        lname = bd.get("lname", mp_loc_name(bd["name"]))
         arm_obj.pose.bones[lname].select = True
         arm_obj.data.bones.active = arm_obj.data.bones[lname]
 
@@ -1087,15 +1135,15 @@ def mp_step2_go():
     bpy.context.view_layer.update()
     set_interpolation(arm_obj)
 
-    # Remove Child Of
+    # Убираем Child Of
     bpy.ops.object.mode_set(mode='OBJECT')
-    for bd in bone_data:
-        lname = mp_loc_name(bd["name"])
+    for bd in all_bone_data:
+        lname = bd.get("lname", mp_loc_name(bd["name"]))
         pb = arm_obj.pose.bones[lname]
         for c in [c for c in list(pb.constraints) if c.name == "MP_CHILD_OF"]:
             pb.constraints.remove(c)
 
-    # Edit Mode — create MPIVOT_CHILD_ without parent
+    # Edit Mode — создаём MPIVOT_CHILD_ без родителя
     bpy.ops.object.mode_set(mode='OBJECT')
     for o in bpy.context.selected_objects:
         o.select_set(False)
@@ -1103,10 +1151,10 @@ def mp_step2_go():
     bpy.ops.object.mode_set(mode='EDIT')
 
     arm_data = arm_obj.data
-    for bd in bone_data:
-        lname    = mp_loc_name(bd["name"])
-        cname    = mp_child_name(bd["name"])
-        src_mat  = src_bone_world_mats[bd["name"]]
+    for bd in all_bone_data:
+        lname    = bd.get("lname", mp_loc_name(bd["name"]))
+        cname    = bd.get("cname", mp_child_name(bd["name"]))
+        src_mat  = src_bone_world_mats[(bd["source_obj"], bd["name"])]
         bone_len = bd["length"]
 
         src_arm_mat = arm_imat @ src_mat
@@ -1127,26 +1175,26 @@ def mp_step2_go():
 
     bpy.ops.object.mode_set(mode='OBJECT')
 
-    # Set parent in edit mode
+    # Назначаем родителя в Edit Mode
     bpy.context.view_layer.objects.active = arm_obj
     bpy.ops.object.mode_set(mode='EDIT')
     arm_data = arm_obj.data
-    for bd in bone_data:
-        lname = mp_loc_name(bd["name"])
-        cname = mp_child_name(bd["name"])
+    for bd in all_bone_data:
+        lname = bd.get("lname", mp_loc_name(bd["name"]))
+        cname = bd.get("cname", mp_child_name(bd["name"]))
         arm_data.edit_bones[cname].parent      = arm_data.edit_bones[lname]
         arm_data.edit_bones[cname].use_connect = False
     bpy.ops.object.mode_set(mode='OBJECT')
 
-    # Pose Mode — fix matrix so child lands on source bone position
+    # Pose Mode — выставляем матрицу: child совпадает с source костью
     bpy.context.view_layer.objects.active = arm_obj
     bpy.ops.object.mode_set(mode='POSE')
     bpy.context.view_layer.update()
 
-    for bd in bone_data:
-        cname    = mp_child_name(bd["name"])
+    for bd in all_bone_data:
+        cname    = bd.get("cname", mp_child_name(bd["name"]))
         pb_child = arm_obj.pose.bones[cname]
-        target_world = src_bone_world_mats[bd["name"]]
+        target_world = src_bone_world_mats[(bd["source_obj"], bd["name"])]
         pb_child.matrix = arm_obj.matrix_world.inverted() @ target_world
         bpy.context.view_layer.update()
         pb_child.rotation_mode          = bd["rotation_mode"]
@@ -1155,21 +1203,24 @@ def mp_step2_go():
         color_blue(pb_child)
         pb_child.hide = True
 
-    # Tag all created bones with source info
-    for bd in bone_data:
-        tag_bone(arm_obj, mp_loc_name(bd["name"]),   source_obj, bd["name"])
-        tag_bone(arm_obj, mp_child_name(bd["name"]), source_obj, bd["name"])
+    # Тегируем все созданные кости
+    for source_obj, bd in bone_entries:
+        tag_bone(arm_obj, bd.get("lname", mp_loc_name(bd["name"])),   source_obj, bd["name"])
+        tag_bone(arm_obj, bd.get("cname", mp_child_name(bd["name"])), source_obj, bd["name"])
 
-    # Copy Loc/Rot on source → MPIVOT_CHILD_
-    bpy.ops.object.mode_set(mode='OBJECT')
-    for o in bpy.context.selected_objects:
-        o.select_set(False)
-    bpy.context.view_layer.objects.active = source_obj
-    source_obj.select_set(True)
-    bpy.ops.object.mode_set(mode='POSE')
+    # Copy Loc + Copy Rot на source → MPIVOT_CHILD_ (по каждой арматуре)
+    processed_objs = set()
+    for source_obj, bd in bone_entries:
+        if source_obj.name not in processed_objs:
+            bpy.ops.object.mode_set(mode='OBJECT')
+            for o in bpy.context.selected_objects:
+                o.select_set(False)
+            bpy.context.view_layer.objects.active = source_obj
+            source_obj.select_set(True)
+            bpy.ops.object.mode_set(mode='POSE')
+            processed_objs.add(source_obj.name)
 
-    for bd in bone_data:
-        cname = mp_child_name(bd["name"])
+        cname = bd.get("cname", mp_child_name(bd["name"]))
         sb    = source_obj.pose.bones[bd["name"]]
         remove_bb_constraints(sb)
         cl = sb.constraints.new(type='COPY_LOCATION')
@@ -1182,8 +1233,9 @@ def mp_step2_go():
         cr.owner_space = 'WORLD'; cr.target_space = 'WORLD'
 
     clear_session(SCENE_KEY_MP)
-    finale(source_obj, arm_obj, [mp_loc_name(bd["name"]) for bd in bone_data])
-    print("✅ Manual Pivot: готово.")
+    all_source_objs = [bpy.data.objects.get(s["source_obj"]) for s in all_sources if bpy.data.objects.get(s["source_obj"])]
+    finale_multi(all_source_objs, arm_obj, [bd.get("lname", mp_loc_name(bd["name"])) for bd in all_bone_data])
+    print(f"✅ Manual Pivot: готово ({len(all_bone_data)} костей из {len(all_sources)} арматур).")
 
 
 def mp_cancel():
@@ -1197,7 +1249,7 @@ def mp_cancel():
         return
     bones_to_remove = []
     for bd in bone_data:
-        bones_to_remove += [mp_loc_name(bd["name"]), mp_child_name(bd["name"])]
+        bones_to_remove += [bd.get("lname", mp_loc_name(bd["name"])), bd.get("cname", mp_child_name(bd["name"]))]
     bpy.ops.object.mode_set(mode='OBJECT')
     for o in bpy.context.selected_objects:
         o.select_set(False)
@@ -1213,18 +1265,20 @@ def mp_cancel():
 # ══════════════════════════════════════════════════════════════════════════════
 #  MODE 4 — reConstrain  (+optional Manual Pivot)
 #
-#  Базовый:
-#    Выбраны 2 кости из одной арматуры.
+#  Базовый (rc_run):
+#    Выбраны ровно 2 кости из одной арматуры.
 #    active = child, non-active = parent.
-#    RC_<child> создаётся в ctrl_arm в позиции/ориентации child кости.
-#    Бейкается с Child Of parent → Set Inverse (анимация child в пространстве parent).
-#    Child Of убирается. На child вешается Copy Loc + Copy Rot от RC_.
+#    RC_PARENT_<parent> — в позиции parent, Copy Loc+Rot от parent, скрытая.
+#    RC_<child>         — дочерняя к RC_PARENT_, в позиции child,
+#                         Copy Loc+Rot от child → бейкаем только её.
+#    На child вешается Copy Loc + Copy Rot от RC_<child>.
 #
-#  + Manual Pivot (Step1/GO):
-#    Step1: создаётся RCPIVOT_<child> — локатор pivot (как в Manual Pivot).
-#           Пользователь его перемещает.
-#    GO:    RC_ создаётся дочерней к RCPIVOT_, бейкается,
-#           затем аналогично базовому.
+#  + Manual Pivot (rc_step1 / rc_step2_go):
+#    Step1: создаётся PIVOT_<child> — пользователь двигает точку вращения.
+#    GO:    Child Of active → Set Inverse на PIVOT_ (фиксирует смещение).
+#           Создаются CM_PARENT_, CM_CONTROL_ (дочерняя, бейкается),
+#           CM_CHILD_ (дочерняя к CM_CONTROL_, в позиции active).
+#           PIVOT_ удаляется. На active вешается Copy Loc+Rot от CM_CHILD_.
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -1235,16 +1289,20 @@ def rc_parent_name(parent): return f"{RC_PARENT_PREFIX}{parent}"
 def rc_ctrl_name(child):    return f"{RC_PREFIX}{child}"
 
 
-def rc_run(source_obj, parent_bone, child_bone):
+def rc_run(source_obj, parent_bone, child_bone, parent_obj=None):
     """Базовый reConstrain без pivot.
 
+    source_obj  — арматура child кости (active).
+    parent_obj  — арматура parent кости (non-active). Если None — та же что source_obj.
     RC_PARENT_<parent> — в месте non-active кости, Copy Loc+Rot от non-active.
     RC_<child>         — дочерняя к RC_PARENT_, без connect, в месте active,
                          Copy Loc+Rot от active.
     Бейкаем только RC_<child>.
-    Убираем все констрейнты с обеих RC_ костей.
     На active вешаем Copy Loc+Rot от RC_<child>.
     """
+    if parent_obj is None:
+        parent_obj = source_obj
+
     scene = bpy.context.scene
     start = scene.frame_start
     end   = scene.frame_end
@@ -1252,7 +1310,7 @@ def rc_run(source_obj, parent_bone, child_bone):
     ensure_all_shapes()
     arm_obj = get_or_create_ctrl_armature()
 
-    parent_world = (source_obj.matrix_world @ parent_bone.matrix).copy()
+    parent_world = (parent_obj.matrix_world @ parent_bone.matrix).copy()
     child_world  = (source_obj.matrix_world @ child_bone.matrix).copy()
     parent_name  = parent_bone.name
     child_name   = child_bone.name
@@ -1321,8 +1379,24 @@ def rc_run(source_obj, parent_bone, child_bone):
         cr.target = source_obj; cr.subtarget = src_name
         cr.owner_space = 'WORLD'; cr.target_space = 'WORLD'
 
-    setup_copy_constraints(arm_obj.pose.bones[pname], parent_name, p_rot, color_orange, 1.25)
-    setup_copy_constraints(arm_obj.pose.bones[cname], child_name,  c_rot, color_green,  1.25)
+    # RC_PARENT_ следит за parent_obj (может быть другой арматурой)
+    pb_par = arm_obj.pose.bones[pname]
+    pb_par.rotation_mode          = p_rot
+    pb_par.custom_shape           = get_or_create_shape_axes()
+    pb_par.custom_shape_scale_xyz = (1.25, 1.25, 1.25)
+    color_orange(pb_par)
+    for c in list(pb_par.constraints):
+        pb_par.constraints.remove(c)
+    cl = pb_par.constraints.new(type='COPY_LOCATION')
+    cl.name = "BB_RC_COPY_LOC"
+    cl.target = parent_obj; cl.subtarget = parent_name
+    cl.owner_space = 'WORLD'; cl.target_space = 'WORLD'
+    cr = pb_par.constraints.new(type='COPY_ROTATION')
+    cr.name = "BB_RC_COPY_ROT"
+    cr.target = parent_obj; cr.subtarget = parent_name
+    cr.owner_space = 'WORLD'; cr.target_space = 'WORLD'
+
+    setup_copy_constraints(arm_obj.pose.bones[cname], child_name, c_rot, color_green, 1.25)
     arm_obj.pose.bones[pname].hide = True
 
     # ── Bake только RC_<child> ────────────────────────────────────────────────
@@ -1360,7 +1434,7 @@ def rc_run(source_obj, parent_bone, child_bone):
     # Тегируем — RC_PARENT_ помечаем флагом bb_skip_bake
     # bb_group связывает все кости одной операции для совместного удаления
     group_id = f"{source_obj.name}:{child_name}"
-    tag_bone(arm_obj, pname, source_obj, parent_name)
+    tag_bone(arm_obj, pname, parent_obj, parent_name)
     arm_obj.pose.bones[pname]["bb_skip_bake"] = True
     arm_obj.pose.bones[pname]["bb_group"]     = group_id
     tag_bone(arm_obj, cname, source_obj, child_name)
@@ -1384,7 +1458,11 @@ def rc_run(source_obj, parent_bone, child_bone):
     cr.target       = arm_obj; cr.subtarget = cname
     cr.owner_space  = 'WORLD'; cr.target_space = 'WORLD'
 
-    finale(source_obj, arm_obj, [cname])
+    # Выделяем обе арматуры — source (child) и parent_obj если они разные
+    src_objs = [source_obj]
+    if parent_obj != source_obj:
+        src_objs.append(parent_obj)
+    finale_multi(src_objs, arm_obj, [cname])
     print(f"✅ reConstrain: {child_name} привязан к {parent_name}")
 
 
@@ -1395,10 +1473,14 @@ def cm_ctrl_name(child):    return f"{CM_CTRL_PREFIX}{child}"
 def cm_child_name(child):   return f"{CM_CHILD_PREFIX}{child}"
 
 
-def rc_step1(source_obj, parent_bone, child_bone):
+def rc_step1(source_obj, parent_bone, child_bone, parent_obj=None):
     """reConstrain + Manual Pivot — Step1.
+    source_obj — арматура child (active). parent_obj — арматура parent (если другая).
     Создаём PIVOT_<child> в позиции active кости — пользователь её двигает.
     """
+    if parent_obj is None:
+        parent_obj = source_obj
+
     ensure_all_shapes()
     arm_obj = get_or_create_ctrl_armature()
     bpy.context.view_layer.update()
@@ -1448,6 +1530,7 @@ def rc_step1(source_obj, parent_bone, child_bone):
 
     save_session(SCENE_KEY_RC, {
         "source_obj":   source_obj.name,
+        "parent_obj":   parent_obj.name,
         "arm_obj":      arm_obj.name,
         "parent_bone":  parent_name,
         "child_bone":   child_name,
@@ -1461,6 +1544,8 @@ def rc_step1(source_obj, parent_bone, child_bone):
     for o in bpy.context.selected_objects:
         o.select_set(False)
     source_obj.select_set(True)
+    if parent_obj != source_obj:
+        parent_obj.select_set(True)
     arm_obj.select_set(True)
     bpy.context.view_layer.objects.active = arm_obj
     bpy.ops.object.mode_set(mode='POSE')
@@ -1483,6 +1568,7 @@ def rc_step2_go():
         return
 
     source_obj  = bpy.data.objects.get(session["source_obj"])
+    parent_obj  = bpy.data.objects.get(session.get("parent_obj", session["source_obj"]))
     arm_obj     = bpy.data.objects.get(session["arm_obj"])
     parent_name = session["parent_bone"]
     child_name  = session["child_bone"]
@@ -1544,9 +1630,9 @@ def rc_step2_go():
         t = (arm_imat @ (world_mat.translation + y * bone_len).to_4d()).to_3d()
         return h, t
 
-    # CM_PARENT_ в позиции non-active кости
-    par_bone   = source_obj.pose.bones[parent_name]
-    par_world  = (source_obj.matrix_world @ par_bone.matrix).copy()
+    # CM_PARENT_ в позиции non-active кости (parent_obj — может быть другой арматурой)
+    par_bone   = parent_obj.pose.bones[parent_name]
+    par_world  = (parent_obj.matrix_world @ par_bone.matrix).copy()
     par_len    = par_bone.length
     par_rot    = par_bone.rotation_mode
     ph, pt     = arm_ht(par_world, par_len)
@@ -1613,10 +1699,10 @@ def rc_step2_go():
     for c in list(pb_par.constraints):
         pb_par.constraints.remove(c)
     cl = pb_par.constraints.new(type='COPY_LOCATION')
-    cl.name = "BB_CM_COPY_LOC"; cl.target = source_obj; cl.subtarget = parent_name
+    cl.name = "BB_CM_COPY_LOC"; cl.target = parent_obj; cl.subtarget = parent_name
     cl.owner_space = 'WORLD'; cl.target_space = 'WORLD'
     cr = pb_par.constraints.new(type='COPY_ROTATION')
-    cr.name = "BB_CM_COPY_ROT"; cr.target = source_obj; cr.subtarget = parent_name
+    cr.name = "BB_CM_COPY_ROT"; cr.target = parent_obj; cr.subtarget = parent_name
     cr.owner_space = 'WORLD'; cr.target_space = 'WORLD'
 
     # CM_CONTROL_: Copy Loc+Rot от PIVOT_, берём rotation_mode от PIVOT_
@@ -1717,7 +1803,10 @@ def rc_step2_go():
     cr.owner_space  = 'WORLD'; cr.target_space = 'WORLD'
 
     clear_session(SCENE_KEY_RC)
-    finale(source_obj, arm_obj, [cname])
+    src_objs = [source_obj]
+    if parent_obj and parent_obj != source_obj:
+        src_objs.append(parent_obj)
+    finale_multi(src_objs, arm_obj, [cname])
     print(f"✅ reConstrain+Pivot: {child_name} готово.")
 
 
@@ -2212,16 +2301,31 @@ class BB_OT_reparent(bpy.types.Operator):
     def poll(cls, context):
         if session_active(SCENE_KEY_AIM) or session_active(SCENE_KEY_MP) or session_active(SCENE_KEY_RC):
             return False
-        if not (context.mode == 'POSE' and
-                context.active_object and
-                context.active_object.type == 'ARMATURE' and
-                context.selected_pose_bones):
+        if context.mode != 'POSE':
+            return False
+        active_obj = context.active_object
+        if not active_obj or active_obj.type != 'ARMATURE':
+            return False
+        # Проверяем что есть активная кость — это надёжно работает из N-панели
+        if not active_obj.data.bones.active:
             return False
         scene = context.scene
-        # reConstrain требует ровно 2 выделенные кости
         if scene.bb_mode_reconstrain:
-            return len(context.selected_pose_bones) == 2
+            # Нужно минимум 2 кости — используем selected_pose_bones если есть,
+            # иначе считаем через context (может быть 0 из N-панели, тогда разрешаем)
+            n = len(context.selected_pose_bones) if context.selected_pose_bones else 0
+            if n == 0:
+                return True  # invoke разберётся
+            return n >= 2
         return True
+
+    def invoke(self, context, event):
+        # Читаем выделение здесь — пока 3D viewport контекст ещё валиден.
+        # В execute контекст может потерять selected_pose_bones из-за N-панели.
+        self._cached_sources        = get_selected_bones_by_armature(context)
+        self._cached_active_obj     = context.active_object
+        self._cached_active_bone_name = context.active_pose_bone.name if context.active_pose_bone else None
+        return self.execute(context)
 
     def execute(self, context):
         scene      = context.scene
@@ -2230,28 +2334,109 @@ class BB_OT_reparent(bpy.types.Operator):
         use_global = scene.bb_mode_global
         use_rc     = scene.bb_mode_reconstrain
 
+        sources          = getattr(self, '_cached_sources', None)
+        active_obj       = getattr(self, '_cached_active_obj', context.active_object)
+        active_bone_name = getattr(self, '_cached_active_bone_name', None)
+        if active_bone_name is None and context.active_pose_bone:
+            active_bone_name = context.active_pose_bone.name
+
+        # Если invoke не вызывался (например через python API) — читаем здесь
+        if sources is None:
+            sources      = get_selected_bones_by_armature(context)
+            active_obj   = context.active_object
+            active_bone_name = context.active_pose_bone.name if context.active_pose_bone else None
+
+        if not sources:
+            self.report({'WARNING'}, "Нет выделенных костей")
+            return {'CANCELLED'}
+
         if use_rc:
-            bones = context.selected_pose_bones
-            # active = child, non-active = parent
-            active_bone = context.active_pose_bone
-            other_bones = [b for b in bones if b != active_bone]
-            if not active_bone or not other_bones:
-                self.report({'WARNING'}, "Нужно выделить ровно 2 кости, active = child")
+            # reConstrain требует ровно 2 кости из ОДНОЙ арматуры
+            # Ищем арматуру с 2+ выделенными костями одной из которых active
+            src_obj = None
+            bones   = None
+            for s_obj, s_bones in sources:
+                if len(s_bones) >= 2 and any(b["name"] == active_bone_name for b in s_bones):
+                    src_obj = s_obj
+                    bones   = s_bones
+                    break
+
+            # Если не нашли — может быть кросс-арматурный случай:
+            # active в одной арматуре, parent в другой
+            if not src_obj:
+                # child — арматура содержащая active_bone
+                for s_obj, s_bones in sources:
+                    if any(b["name"] == active_bone_name for b in s_bones):
+                        src_obj = s_obj
+                        bones   = s_bones
+                        break
+                # parent — любая другая арматура с выделенными костями
+                par_obj  = None
+                par_bones_list = None
+                for s_obj, s_bones in sources:
+                    if s_obj != src_obj:
+                        par_obj = s_obj
+                        par_bones_list = s_bones
+                        break
+                if src_obj and par_obj and par_bones_list:
+                    parent_pb = par_obj.pose.bones.get(par_bones_list[0]["name"])
+                    child_pb  = src_obj.pose.bones.get(active_bone_name)
+                    if not parent_pb or not child_pb:
+                        self.report({'WARNING'}, "Кости не найдены в арматурах")
+                        return {'CANCELLED'}
+                    if use_mp:
+                        rc_step1(src_obj, parent_pb, child_pb, parent_obj=par_obj)
+                    else:
+                        rc_run(src_obj, parent_pb, child_pb, parent_obj=par_obj)
+                    return {'FINISHED'}
+                self.report({'WARNING'}, "reConstrain: выделите 2 кости, active = child")
                 return {'CANCELLED'}
-            parent_bone = other_bones[0]
-            child_bone  = active_bone
+
+            other_bones = [b for b in bones if b["name"] != active_bone_name]
+            if not other_bones:
+                self.report({'WARNING'}, "reConstrain: выделите 2 кости из одной арматуры, active = child")
+                return {'CANCELLED'}
+            parent_pb = src_obj.pose.bones.get(other_bones[0]["name"])
+            child_pb  = src_obj.pose.bones.get(active_bone_name)
+            if not parent_pb or not child_pb:
+                self.report({'WARNING'}, "Кости не найдены в арматуре")
+                return {'CANCELLED'}
             if use_mp:
-                rc_step1(context.active_object, parent_bone, child_bone)
+                rc_step1(src_obj, parent_pb, child_pb)
             else:
-                rc_run(context.active_object, parent_bone, child_bone)
+                rc_run(src_obj, parent_pb, child_pb)
         elif use_aim:
-            aim_step1(context.active_object, list(context.selected_pose_bones))
+            aim_step1(sources)
         elif use_mp:
-            mp_step1(context.active_object, list(context.selected_pose_bones))
+            mp_step1(sources)
         elif use_global:
-            rp_run_global(context.active_object, list(context.selected_pose_bones))
+            all_ctrl_names = []
+            all_src_objs   = []
+            last_arm = None
+            for src_obj, bones in sources:
+                arm_name = src_obj.name if src_obj != active_obj else None
+                ctrl_names = rp_run(src_obj, bones, global_mode=True,
+                                    arm_name=arm_name, skip_finale=True)
+                if ctrl_names:
+                    all_ctrl_names.extend(ctrl_names)
+                    all_src_objs.append(src_obj)
+                    last_arm = get_or_create_ctrl_armature()
+            if all_src_objs and last_arm:
+                finale_multi(all_src_objs, last_arm, all_ctrl_names)
         else:
-            rp_run(context.active_object, list(context.selected_pose_bones))
+            all_ctrl_names = []
+            all_src_objs   = []
+            last_arm = None
+            for src_obj, bones in sources:
+                arm_name = src_obj.name if src_obj != active_obj else None
+                ctrl_names = rp_run(src_obj, bones, arm_name=arm_name,
+                                    skip_finale=True)
+                if ctrl_names:
+                    all_ctrl_names.extend(ctrl_names)
+                    all_src_objs.append(src_obj)
+                    last_arm = get_or_create_ctrl_armature()
+            if all_src_objs and last_arm:
+                finale_multi(all_src_objs, last_arm, all_ctrl_names)
         return {'FINISHED'}
 
 
@@ -2508,7 +2693,21 @@ class BB_OT_flip_animation(bpy.types.Operator):
 
     def execute(self, context):
         obj         = context.active_object
-        saved_frame = context.scene.frame_current
+        scene       = context.scene
+        saved_frame = scene.frame_current
+
+        # Запоминаем и сбрасываем playback speed если не 1x
+        saved_frame_map_old = scene.render.frame_map_old
+        saved_frame_map_new = scene.render.frame_map_new
+        saved_frame_end     = scene.frame_end
+        current_ratio = saved_frame_map_old / max(saved_frame_map_new, 1)
+        speed_was_changed = abs(current_ratio - 1.0) > 0.001
+
+        if speed_was_changed:
+            scene.render.frame_map_old = 100
+            scene.render.frame_map_new = 100
+            if "_original_frame_end" in scene:
+                scene.frame_end = scene["_original_frame_end"]
 
         original = get_selected_bone_names()
         if not original:
@@ -2517,14 +2716,28 @@ class BB_OT_flip_animation(bpy.types.Operator):
 
         bpy.ops.pose.select_mirror(only_active=False, extend=False)
         mirror = get_selected_bone_names()
-        if not mirror:
-            self.report({'WARNING'}, "No mirror bones found")
+
+        if not mirror or set(mirror) == set(original):
+            select_bones_by_name(obj, original)
+            self.report({'WARNING'}, "No mirror bones found — кости без зеркального аналога")
+            return {'CANCELLED'}
+
+        mirror_only = [b for b in mirror if b not in original]
+        if not mirror_only:
+            select_bones_by_name(obj, original)
+            self.report({'WARNING'}, "No mirror bones found — кости без зеркального аналога")
             return {'CANCELLED'}
 
         bpy.ops.pose.select_mirror(only_active=False, extend=False)
 
-        ok, msg = run_flip_animation(obj, original, mirror)
-        context.scene.frame_set(saved_frame)
+        ok, msg = run_flip_animation(obj, original, mirror_only)
+        scene.frame_set(saved_frame)
+
+        # Восстанавливаем playback speed
+        if speed_was_changed:
+            scene.render.frame_map_old = saved_frame_map_old
+            scene.render.frame_map_new = saved_frame_map_new
+            scene.frame_end            = saved_frame_end
 
         if ok:
             select_bones_by_name(obj, original)

@@ -320,14 +320,17 @@ def get_selected_bones_by_armature(context):
     if not selected_pose_bones:
         return result
 
-    # Строим карту: armature data → object
+    # Строим карту: armature data → object (храним оба ключа — имя объекта и имя данных,
+    # т.к. pb.id_data.name возвращает имя объекта, а obj.data.name может отличаться)
     arm_data_to_obj = {}
     for obj in context.selected_objects:
         if obj.type == 'ARMATURE':
             arm_data_to_obj[obj.data.name] = obj
+            arm_data_to_obj[obj.name] = obj
     # Активный объект тоже
     if active_obj.type == 'ARMATURE':
         arm_data_to_obj[active_obj.data.name] = active_obj
+        arm_data_to_obj[active_obj.name] = active_obj
 
     # Группируем pose bones по арматуре
     by_arm = {}
